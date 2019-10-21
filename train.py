@@ -1,4 +1,4 @@
-import torch
+import torch #To install torch use "pip3 install torch==1.2.0+cpu torchvision==0.4.0+cpu -f https://download.pytorch.org/whl/torch_stable.html"
 import inspect
 from torch import nn, optim
 from torch.autograd.variable import Variable
