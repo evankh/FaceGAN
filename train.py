@@ -1,82 +1,83 @@
-import torch #To install torch use "pip3 install torch==1.2.0+cpu torchvision==0.4.0+cpu -f https://download.pytorch.org/whl/torch_stable.html"
-import inspect
-from torch import nn, optim
-from torch.autograd.variable import Variable
-from torchvision import transforms, datasets
-from keras import backend
-from keras import optimizers
-from keras.models import Sequential, Model
-from keras.layers import Dense, Dropout
-from keras.layers import Reshape
-from keras.layers.core import Activation
-from keras.layers.advanced_activations import LeakyReLU
-from keras.layers.normalization import BatchNormalization
-from keras.layers.convolutional import UpSampling2D
-from keras.layers.convolutional import Convolution2D
-from keras.layers import Input, LSTM, RepeatVector, Lambda
-from keras.layers.core import Flatten
-from keras.optimizers import Adam
-from keras import backend as K
+import tensorflow as tf
+import tensorflow.keras.backend as K
+from keras_preprocessing.image import ImageDataGenerator
+from keras.datasets import cifar10
 import numpy as np
-import sys, glob
-import os
-import pytest
-import argparse
-import model
+import cv2
+import os, sys
+import matplotlib.pyplot as plt
 
-sgd = optimizers.SGD(lr=0.0002, momentum=0.0, nesterov=False)
-#for more optimizers look at https://keras.io/optimizers/
-# implementation of wasserstein loss function
-def wasserstein_loss(y_true, y_pred):
-	return backend.mean(y_true * y_pred)
-#BCE loss function, alternative to wasserstein
-loss = nn.BCELoss()
-# Total number of epochs to train
-num_epochs = 100
-num_test_samples = 16
-test_noise = model.noise(num_test_samples)
+def train(g, d, epochs, batch_size=128, save_interval=50):
+        generator = g
+        discriminator = d
+        # Load the dataset
+        datagen=ImageDataGenerator(rescale=1./255)
+        path = os.path.dirname(__file__)
+        imgpath = os.path.join(path,"00000")
+        (X_train, _), (_, _) = datagen.flow_from_directory(directory=imgpath, target_size=(128, 128))
 
-def train_discriminator(optimizer, real_data, fake_data):
-    N = real_data.size(0)
-    # Reset gradients
-    sgd.zero_grad()
-    
-    # 1.1 Train on Real Data
-    prediction_real = model.discriminator(real_data)
-    # Calculate error and backpropagate
-    error_real = wassrstein_loss(prediction_real, ones_target(N) )
-    error_real.backward()
+        # Rescale -1 to 1
+        X_train = (X_train.astype(np.float32) - 127.5) / 127.5
+        X_train = np.expand_dims(X_train, axis=3)
 
-    # 1.2 Train on Fake Data
-    prediction_fake = model.discriminator(fake_data)
-    # Calculate error and backpropagate
-    error_fake = loss(prediction_fake, zeros_target(N))
-    error_fake.backward()
-    
-    # 1.3 Update weights with gradients
-    sgd.step()
-    
-    # Return error and predictions for real and fake inputs
-    return error_real + error_fake, prediction_real, prediction_fake
+        half_batch = int(batch_size / 2)
 
-def train_generator(optimizer, fake_data):
-    N = fake_data.size(0)
-    # Reset gradients
-    sgd.zero_grad()
-    # Sample noise and generate fake data
-    prediction = model.discriminator(fake_data)
-    # Calculate error and backpropagate
-    error = loss(prediction, ones_target(N))
-    error.backward()
-    # Update weights with gradients
-    sgd.step()
-    # Return error
-    return error
+        for epoch in range(epochs):
 
-for epoch in range(num_epochs):
-    for n_batch, (real_batch,_) in enumerate(data): #Iterate through data
-        fake_data = model.generator(noise(N)).detach()
-        N = real_batch.size(0)
-        d_error, d_pred_real, d_pred_fake = train_discriminator(d_optimizer, real_data, fake_data)
-        fake_data = model.generator(noise(N))
-        g_error = train_generator(g_optimizer, fake_data)
+            # ---------------------
+            #  Train Discriminator
+            # ---------------------
+
+            # Select a random half batch of images
+            idx = np.random.randint(0, X_train.shape[0], half_batch)
+            imgs = X_train[idx]
+
+            noise = np.random.normal(0, 1, (half_batch, 100))
+
+            # Generate a half batch of new images
+            gen_imgs = generator.predict(noise)
+
+            # Train the discriminator
+            d_loss_real = discriminator.train_on_batch(imgs, np.ones((half_batch, 1)))
+            d_loss_fake = discriminator.train_on_batch(gen_imgs, np.zeros((half_batch, 1)))
+            d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+
+            # ---------------------
+            #  Train Generator
+            # ---------------------
+
+            noise = np.random.normal(0, 1, (batch_size, 100))
+
+            # The generator wants the discriminator to label the generated samples
+            # as valid (ones)
+            valid_y = np.array([1] * batch_size)
+
+            # Train the generator
+            g_loss = generator.train_on_batch(noise, valid_y)
+
+            # Plot the progress
+            print ("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[1], g_loss))
+
+            # If at save interval => save generated image samples
+            if epoch % save_interval == 0:
+                save_imgs(epoch)
+
+def save_imgs(epoch, generator):
+        r, c = 5, 5
+        noise = np.random.normal(0, 1, (r * c, 100))
+        gen_imgs = generator.predict(noise)
+
+        # Rescale images 0 - 1
+        gen_imgs = 0.5 * gen_imgs + 0.5
+
+        fig, axs = plt.subplots(r, c)
+        cnt = 0
+        for i in range(r):
+            for j in range(c):
+                axs[i,j].imshow(gen_imgs[cnt, :,:,0], cmap='gray')
+                axs[i,j].axis('off')
+                cnt += 1
+        fig.savefig("gan/images/mnist_%d.png" % epoch)
+        plt.close()
+
+train(generator, discriminator, epochs=30000, batch_size=32, save_interval=200)
