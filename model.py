@@ -1,15 +1,13 @@
 import tensorflow as tf
+import tensorflow.keras.backend as K
 import numpy as np
 
 input_size = 64
 latent_size = 64
 
 class NoiseLayer(tf.keras.layers.Layer):
-        """Creates a random zero-centered Gaussian noise vector with the
-        given standard deviation, and adds it to the input scaled by a
-        learned factor.
-        # Arguments
-        stddev: Standard deviation of the noise
+        """Adds random zero-centered Gaussian noise vector with the
+        given standard deviation to the input, scaled by a learned factor.
         """
         def __init__(self, stddev, **kwargs):
                 super(NoiseLayer, self).__init__(**kwargs)
@@ -24,6 +22,7 @@ class NoiseLayer(tf.keras.layers.Layer):
                 return input_shape
         def call(self, inputs):
                 return inputs + np.random.normal(0.0, self.stddev, inputs.shape[1:]) * self.scale
+
 class ConstantLayer(tf.keras.layers.Layer):
         """Creates a set of learned constants to use as initial input.
         """
@@ -36,12 +35,12 @@ class ConstantLayer(tf.keras.layers.Layer):
                 self.constant = self.add_weight(shape=self.shape,
                                                 initializer=tf.keras.initializers.zeros,
                                                 name="constant")
+                super(ConstantLayer, self).build(input_shape)
         def compute_output_shape(self, input_shape):
                 return (input_shape[0],) + self.shape
         def call(self, inputs):
-                print(inputs)
-                print(self.constant)
                 return self.constant
+
 class AdaptiveInstanceNormalization(tf.keras.layers.Layer):
         """Does the magic AdaIN transformation.
         """
@@ -59,21 +58,25 @@ class AdaptiveInstanceNormalization(tf.keras.layers.Layer):
         def compute_output_shape(self, input_shape):
                 return input_shape
         def call(self, inputs):
-                # This is where the magic happens
                 # Aligns Mean and StdDev of input to learned Mean and StdDev of style
                 # How is this "controlled" by the latent code?
                 # y = LearnedAffine(latent_code) -> mean(y), stddev(y) ??? Dimensionality of y == dimensionality of inputs?
-                mean = sum(inputs) / prod(inputs.size)
-                stddev = sqrt(sum((inputs-mean)*(inputs-mean) + 0.01) / prod(inputs.size))
-                normalized = (inputs - mean) / stddev
+                normalized = (inputs - K.mean(inputs)) / K.std(inputs)  # Which axis?
                 return self.stddev * normalized + self.mean
                 
+
 class Generator(tf.keras.Sequential):
+        """Keeps all necessary information for the generator in one place.
+        """
         def __init__(self, mapping, synthesis, **kwargs):
                 super(Generator, self).__init__(**kwargs)
                 self.mapping = mapping
                 self.synthesis = synthesis
+        # To-do: make the training from the synthesis propagate back into the mapping network (not sure if that can be done here, or must be done in the training code)
+
 class Discriminator(tf.keras.Sequential):
+        """Keeps all necessary information for the discriminator in one place.
+        """
         def __init__(self, classifier, **kwargs):
                 super(Discriminator, self).__init__(**kwargs)
                 self.classifier = classifier
@@ -95,16 +98,17 @@ mapping.compile(loss="mean_squared_error", optimizer="adam")
 # Synthesis Network
 synthesis = tf.keras.Sequential()
 synthesis.add(tf.keras.layers.Input(shape=(1,)))        # Anything put here will be ignored by the next layer, but this is the easiest way to give the model its needed input_shape
+synthesis.add(NoiseLayer(1.0))
 synthesis.add(ConstantLayer((4, 4, latent_size)))       # Learned constant input, where the generation actually starts
 synthesis.add(tf.keras.layers.Flatten())
 synthesis.add(tf.keras.layers.Dense(48))
 synthesis.add(tf.keras.layers.Reshape((4, 4, 3)))
 synthesis.add(NoiseLayer(1.0))
-#synthesis.add(AdaptiveInstanceNormalization(mapping.output))
+synthesis.add(AdaptiveInstanceNormalization(mapping.output))
 synthesis.add(tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"))
 synthesis.add(NoiseLayer(1.0))
-#synthesis.add(AdaptiveInstanceNormalization(mapping.output))
-#synthesis.compile(loss="mean_squared_error", optimizer="adam")
+synthesis.add(AdaptiveInstanceNormalization(mapping.output))
+synthesis.compile(loss="mean_squared_error", optimizer="adam")
 
 generator = Generator(mapping, synthesis)
 #generator.compile(loss="mean_squared_error", optimizer="adam")
@@ -116,7 +120,7 @@ classifier.add(tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"))
 classifier.add(tf.keras.layers.Flatten())
 classifier.add(tf.keras.layers.Dense(2, activation="relu"))
 classifier.add(tf.keras.layers.Activation(tf.keras.activations.softmax))
-#classifier.compile(loss="mean_squared_error", optimizer="adam", metrics=["accuracy"])
+classifier.compile(loss="mean_squared_error", optimizer="adam", metrics=["accuracy"])
 
 discriminator = Discriminator(classifier)
 #discriminator.compile(loss="mean_squared_error", optimizer="adam")
@@ -130,9 +134,8 @@ def add_resolution(generator, discriminaor):
         generator.synthesis.add(NoiseLayer(1.0))
         generator.synthesis.add(AdaptiveInstanceNormalization(generator.mapping.output))
         # Note: could update generator.mapping with a new input vector at various resolutions
-        generator.synthesis.compile()
+        generator.synthesis.compile(loss="mean_squared_error", optimizer="adam")
         # To-do: smooth fade-in of the new layer as decribed in [5]
-        # Seems to be building it perfectly though
         discriminator.resolution *= 2
         discriminator.classifier = tf.keras.Sequential([tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, 3)),
                                                         tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"),
