@@ -1,25 +1,12 @@
 import tensorflow as tf
-import tensorflow.keras.backend as K
 from keras_preprocessing.image import ImageDataGenerator
-from keras.datasets import cifar10
 import numpy as np
-import cv2
 import os, sys
 import matplotlib.pyplot as plt
+import model
+import dataset
 
-def train(g, d, epochs, batch_size=128, save_interval=50):
-        generator = g
-        discriminator = d
-        # Load the dataset
-        datagen=ImageDataGenerator(rescale=1./255)
-        path = os.path.dirname(__file__)
-        imgpath = os.path.join(path,"00000")
-        (X_train, _), (_, _) = datagen.flow_from_directory(directory=imgpath, target_size=(128, 128))
-
-        # Rescale -1 to 1
-        X_train = (X_train.astype(np.float32) - 127.5) / 127.5
-        X_train = np.expand_dims(X_train, axis=3)
-
+def train(generator, discriminator, epochs, batch_size=128, save_interval=50, resolution=4):
         half_batch = int(batch_size / 2)
 
         for epoch in range(epochs):
@@ -29,10 +16,10 @@ def train(g, d, epochs, batch_size=128, save_interval=50):
             # ---------------------
 
             # Select a random half batch of images
-            idx = np.random.randint(0, X_train.shape[0], half_batch)
-            imgs = X_train[idx]
+            imgs = dataset.get_n_images(resolution, half_batch)
+            
 
-            noise = np.random.normal(0, 1, (half_batch, 100))
+            noise = np.random.normal(0, 1, (half_batch, 64))    # 64 = input space size
 
             # Generate a half batch of new images
             gen_imgs = generator.generate(noise)
@@ -47,10 +34,13 @@ def train(g, d, epochs, batch_size=128, save_interval=50):
             # ---------------------
 
             noise = np.random.normal(0, 1, (batch_size, 64))    # 64 = input space size
+            print(noise.shape)
 
             # The generator wants the discriminator to label the generated samples
             # as valid (ones)
-            valid_y = np.array([1] * batch_size)
+            # Generator's training data needs to be: a set of inputs, and whether the discriminator was fooled by them
+            valid_y = discriminator.classify(generator.generate(noise))
+            # Can't do that, seems like the mapping network is never updated with the right batch size? And for some reason it's not getting it passed in
 
             # Train the generator
             g_loss = generator.train_on_batch(noise, valid_y)
@@ -61,6 +51,7 @@ def train(g, d, epochs, batch_size=128, save_interval=50):
             # If at save interval => save generated image samples
             if epoch % save_interval == 0:
                 save_imgs(epoch)
+                # Should probably also save the current state of the networks periodically
 
 def save_imgs(epoch, generator):
         r, c = 5, 5
@@ -68,7 +59,7 @@ def save_imgs(epoch, generator):
         gen_imgs = generator.predict(noise)
 
         # Rescale images 0 - 1
-        gen_imgs = 0.5 * gen_imgs + 0.5
+        #gen_imgs = 0.5 * gen_imgs + 0.5
 
         fig, axs = plt.subplots(r, c)
         cnt = 0
@@ -77,7 +68,9 @@ def save_imgs(epoch, generator):
                 axs[i,j].imshow(gen_imgs[cnt, :,:,0], cmap='gray')
                 axs[i,j].axis('off')
                 cnt += 1
-        fig.savefig("gan/images/mnist_%d.png" % epoch)
+        fig.savefig("../generated/4/%d.png" % epoch)
         plt.close()
 
-train(generator, discriminator, epochs=30000, batch_size=32, save_interval=200)
+train(model.generator, model.discriminator, epochs=3000, batch_size=32, save_interval=200, resolution=4)
+add_resolution(model.generator, model.discriminator)
+train(model.generator, model.discriminator, epochs=3000, batch_size=32, save_interval=200, resolution=8)

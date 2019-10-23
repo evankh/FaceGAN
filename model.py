@@ -73,9 +73,9 @@ class Generator:
                 self.model = tf.keras.Model(inputs=self.inputs, outputs=self.synthesis)
                 self.model.compile(loss="mean_squared_error", optimizer="adam")
         def generate(self, noise):
-                return self.model.predict([noise, np.zeros_like(noise)])
+                return self.model.predict([noise, np.zeros((noise.shape[0], 4, 4, latent_size))])
         def train_on_batch(self, x, y):
-                return self.model.train_on_batch([x, np.zeros_like(x)], y)
+                return self.model.train_on_batch([x, np.zeros((x.shape[0], 4, 4, latent_size))], y)
 
 class Discriminator:
         """Keeps all necessary information for the discriminator in one place.
@@ -83,6 +83,8 @@ class Discriminator:
         def __init__(self, classifier):
                 self.classifier = classifier
                 self.resolution = 4
+        def classify(self, image):
+                return K.argmax(self.classifier.predict(image))
 
 # Mapping Network
 mapping = tf.keras.Sequential()
@@ -122,7 +124,7 @@ classifier.add(tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"))
 classifier.add(tf.keras.layers.Flatten())
 classifier.add(tf.keras.layers.Dense(2, activation="relu"))
 classifier.add(tf.keras.layers.Activation(tf.keras.activations.softmax))
-classifier.compile(loss="mean_squared_error", optimizer="adam", metrics=["accuracy"])
+classifier.compile(loss="sparse_categorical_crossentropy", optimizer="adam", metrics=["accuracy"])
 
 discriminator = Discriminator(classifier)
 
