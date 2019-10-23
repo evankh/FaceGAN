@@ -45,37 +45,36 @@ class AdaptiveInstanceNormalization(tf.keras.layers.Layer):
                 super(AdaptiveInstanceNormalization, self).__init__(**kwargs)
                 self.latent_code = latent_code
         def build(self, input_shape):
-                # Per-channel Mean and Stddev of the style are learned?
-                self.stddev = self.add_weight(shape=input_shape[1:],
+                # Learns a mapping from the latent space to per-channel mean and Stddev
+                self.stddev = self.add_weight(shape=self.latent_code.output.shape[1:] + input_shape[1:],
                                               initializer=tf.keras.initializers.ones,
                                               name="stddev")
-                self.mean = self.add_weight(shape=input_shape[1:],
+                self.mean = self.add_weight(shape=self.latent_code.output.shape[1:] + input_shape[1:],
                                             initializer=tf.keras.initializers.zeros,
                                             name="mean")
         def compute_output_shape(self, input_shape):
                 return input_shape
         def call(self, inputs):
                 # Aligns Mean and StdDev of input to learned Mean and StdDev of style
-                # How is this "controlled" by the latent code?
-                # y = LearnedAffine(latent_code) -> mean(y), stddev(y) ??? Dimensionality of y == dimensionality of inputs?
-                normalized = (inputs - K.mean(inputs)) / K.std(inputs)  # Which axis?
-                return self.stddev * normalized + self.mean
-                
+                normalized = (inputs - K.mean(inputs)) / K.std(inputs)
+                # I wonder if this computation can / is cached, since much of it doesn't depend on the inputs
+                return K.batch_dot(self.latent_code.output, K.expand_dims(self.stddev,0), axes=1) * normalized + K.batch_dot(self.latent_code.output, K.expand_dims(self.mean,0), axes=1)
+        # This isn't ever getting any new latent codes. Once they're in, they're in for good.
+        # Is there a way to make a layer take multiple inputs without using the functional model?        
 
-class Generator(tf.keras.Sequential):
+class Generator:
         """Keeps all necessary information for the generator in one place.
         """
-        def __init__(self, mapping, synthesis, **kwargs):
-                super(Generator, self).__init__(**kwargs)
+        def __init__(self, mapping, synthesis):
                 self.mapping = mapping
                 self.synthesis = synthesis
-        # To-do: make the training from the synthesis propagate back into the mapping network (not sure if that can be done here, or must be done in the training code)
+        # To-do: make the training from the synthesis propagate back into the mapping network
+        # (not sure if that can be done here, or must be done in the training code)
 
-class Discriminator(tf.keras.Sequential):
+class Discriminator:
         """Keeps all necessary information for the discriminator in one place.
         """
-        def __init__(self, classifier, **kwargs):
-                super(Discriminator, self).__init__(**kwargs)
+        def __init__(self, classifier):
                 self.classifier = classifier
                 self.resolution = 4
 
@@ -94,16 +93,16 @@ mapping.compile(loss="mean_squared_error", optimizer="adam")
 
 # Synthesis Network
 synthesis = tf.keras.Sequential()
-synthesis.add(tf.keras.layers.Input(shape=(4, 4, latent_size)))        # Anything put here will be ignored by the next layer, but this is the easiest way to give the model its needed input_shape
+synthesis.add(tf.keras.layers.Input(shape=(4, 4, latent_size))) # Anything put here will be ignored by the next layer, but this is the easiest way to give the model its needed input_shape
 synthesis.add(ConstantLayer())
 synthesis.add(tf.keras.layers.Flatten())
 synthesis.add(tf.keras.layers.Dense(48))
 synthesis.add(tf.keras.layers.Reshape((4, 4, 3)))
 synthesis.add(NoiseLayer(1.0))
-synthesis.add(AdaptiveInstanceNormalization(mapping.output))
+synthesis.add(AdaptiveInstanceNormalization(mapping))
 synthesis.add(tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"))
 synthesis.add(NoiseLayer(1.0))
-synthesis.add(AdaptiveInstanceNormalization(mapping.output))
+synthesis.add(AdaptiveInstanceNormalization(mapping))
 synthesis.compile(loss="mean_squared_error", optimizer="adam")
 
 generator = Generator(mapping, synthesis)
@@ -125,10 +124,10 @@ def add_resolution(generator, discriminaor):
         generator.synthesis.add(tf.keras.layers.UpSampling2D())
         generator.synthesis.add(tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"))
         generator.synthesis.add(NoiseLayer(1.0))
-        generator.synthesis.add(AdaptiveInstanceNormalization(generator.mapping.output))
+        generator.synthesis.add(AdaptiveInstanceNormalization(generator.mapping))
         generator.synthesis.add(tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"))
         generator.synthesis.add(NoiseLayer(1.0))
-        generator.synthesis.add(AdaptiveInstanceNormalization(generator.mapping.output))
+        generator.synthesis.add(AdaptiveInstanceNormalization(generator.mapping))
         # Note: could update generator.mapping with a new input vector at various resolutions
         generator.synthesis.compile(loss="mean_squared_error", optimizer="adam")
         # To-do: smooth fade-in of the new layer as decribed in [5]
