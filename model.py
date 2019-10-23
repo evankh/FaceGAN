@@ -26,20 +26,17 @@ class NoiseLayer(tf.keras.layers.Layer):
 class ConstantLayer(tf.keras.layers.Layer):
         """Creates a set of learned constants to use as initial input.
         """
-        def __init__(self, output_shape, **kwargs):
+        def __init__(self, **kwargs):
                 super(ConstantLayer, self).__init__(**kwargs)
-                if not isinstance(output_shape, tuple):
-                        raise TypeError("Needs to be a tuple")
-                self.shape = output_shape
         def build(self, input_shape):
-                self.constant = self.add_weight(shape=self.shape,
+                self.constant = self.add_weight(shape=input_shape[1:],
                                                 initializer=tf.keras.initializers.zeros,
                                                 name="constant")
                 super(ConstantLayer, self).build(input_shape)
         def compute_output_shape(self, input_shape):
-                return (input_shape[0],) + self.shape
+                return input_shape
         def call(self, inputs):
-                return self.constant
+                return inputs - inputs + self.constant
 
 class AdaptiveInstanceNormalization(tf.keras.layers.Layer):
         """Does the magic AdaIN transformation.
@@ -49,10 +46,10 @@ class AdaptiveInstanceNormalization(tf.keras.layers.Layer):
                 self.latent_code = latent_code
         def build(self, input_shape):
                 # Per-channel Mean and Stddev of the style are learned?
-                self.stddev = self.add_weight(shape=input_shape,
+                self.stddev = self.add_weight(shape=input_shape[1:],
                                               initializer=tf.keras.initializers.ones,
                                               name="stddev")
-                self.mean = self.add_weight(shape=input_shape,
+                self.mean = self.add_weight(shape=input_shape[1:],
                                             initializer=tf.keras.initializers.zeros,
                                             name="mean")
         def compute_output_shape(self, input_shape):
@@ -97,9 +94,8 @@ mapping.compile(loss="mean_squared_error", optimizer="adam")
 
 # Synthesis Network
 synthesis = tf.keras.Sequential()
-synthesis.add(tf.keras.layers.Input(shape=(1,)))        # Anything put here will be ignored by the next layer, but this is the easiest way to give the model its needed input_shape
-synthesis.add(NoiseLayer(1.0))
-synthesis.add(ConstantLayer((4, 4, latent_size)))       # Learned constant input, where the generation actually starts
+synthesis.add(tf.keras.layers.Input(shape=(4, 4, latent_size)))        # Anything put here will be ignored by the next layer, but this is the easiest way to give the model its needed input_shape
+synthesis.add(ConstantLayer())
 synthesis.add(tf.keras.layers.Flatten())
 synthesis.add(tf.keras.layers.Dense(48))
 synthesis.add(tf.keras.layers.Reshape((4, 4, 3)))
