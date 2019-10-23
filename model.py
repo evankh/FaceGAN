@@ -38,38 +38,44 @@ class ConstantLayer(tf.keras.layers.Layer):
         def call(self, inputs):
                 return inputs - inputs + self.constant
 
-class AdaptiveInstanceNormalization(tf.keras.layers.Layer):
+class AdaptiveInstanceNormalizationLayer(tf.keras.layers.Layer):
         """Does the magic AdaIN transformation.
         """
-        def __init__(self, latent_code, **kwargs):
-                super(AdaptiveInstanceNormalization, self).__init__(**kwargs)
-                self.latent_code = latent_code
+        def __init__(self, **kwargs):
+                super(AdaptiveInstanceNormalizationLayer, self).__init__(**kwargs)
         def build(self, input_shape):
-                # Learns a mapping from the latent space to per-channel mean and Stddev
-                self.stddev = self.add_weight(shape=self.latent_code.output.shape[1:] + input_shape[1:],
+                # Learns a mapping from the latent space to per-channel Mean and StdDev
+                assert len(input_shape) == 2
+                latent_shape, layer_shape = input_shape
+                self.stddev = self.add_weight(shape=latent_shape[1:] + layer_shape[1:],
                                               initializer=tf.keras.initializers.ones,
                                               name="stddev")
-                self.mean = self.add_weight(shape=self.latent_code.output.shape[1:] + input_shape[1:],
+                self.mean = self.add_weight(shape=latent_shape[1:] + layer_shape[1:],
                                             initializer=tf.keras.initializers.zeros,
                                             name="mean")
         def compute_output_shape(self, input_shape):
-                return input_shape
+                assert len(input_shape) == 2
+                return input_shape[1]
         def call(self, inputs):
-                # Aligns Mean and StdDev of input to learned Mean and StdDev of style
-                normalized = (inputs - K.mean(inputs)) / K.std(inputs)
-                # I wonder if this computation can / is cached, since much of it doesn't depend on the inputs
-                return K.batch_dot(self.latent_code.output, K.expand_dims(self.stddev,0), axes=1) * normalized + K.batch_dot(self.latent_code.output, K.expand_dims(self.mean,0), axes=1)
-        # This isn't ever getting any new latent codes. Once they're in, they're in for good.
-        # Is there a way to make a layer take multiple inputs without using the functional model?        
+                assert len(inputs) == 2
+                latent_code, layer = inputs
+                # Aligns Mean and StdDev of input to learned Mean and StdDev of "style"
+                normalized = (layer - K.mean(layer)) / K.std(layer)     # Is this doing it per-channel or per-layer?
+                return K.batch_dot(latent_code, K.expand_dims(self.stddev,0), axes=1) * normalized + K.batch_dot(latent_code, K.expand_dims(self.mean,0), axes=1)
 
 class Generator:
         """Keeps all necessary information for the generator in one place.
         """
-        def __init__(self, mapping, synthesis):
+        def __init__(self, mapping, synthesis, inputs):
                 self.mapping = mapping
                 self.synthesis = synthesis
-        # To-do: make the training from the synthesis propagate back into the mapping network
-        # (not sure if that can be done here, or must be done in the training code)
+                self.inputs = inputs
+                self.model = tf.keras.Model(inputs=self.inputs, outputs=self.synthesis)
+                self.model.compile(loss="mean_squared_error", optimizer="adam")
+        def generate(self, noise):
+                return self.model.predict([noise, np.zeros_like(noise)])
+        def train_on_batch(self, x, y):
+                return self.model.train_on_batch([x, np.zeros_like(x)], y)
 
 class Discriminator:
         """Keeps all necessary information for the discriminator in one place.
@@ -92,21 +98,22 @@ mapping.add(tf.keras.layers.Dense(latent_size, activation="relu"))
 mapping.compile(loss="mean_squared_error", optimizer="adam")
 
 # Synthesis Network
-synthesis = tf.keras.Sequential()
-synthesis.add(tf.keras.layers.Input(shape=(4, 4, latent_size))) # Anything put here will be ignored by the next layer, but this is the easiest way to give the model its needed input_shape
-synthesis.add(ConstantLayer())
-synthesis.add(tf.keras.layers.Flatten())
-synthesis.add(tf.keras.layers.Dense(48))
-synthesis.add(tf.keras.layers.Reshape((4, 4, 3)))
-synthesis.add(NoiseLayer(1.0))
-synthesis.add(AdaptiveInstanceNormalization(mapping))
-synthesis.add(tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"))
-synthesis.add(NoiseLayer(1.0))
-synthesis.add(AdaptiveInstanceNormalization(mapping))
-synthesis.compile(loss="mean_squared_error", optimizer="adam")
+# Has to be rewritten using the Functional API so that the AdaIN layers can take multiple inputs
+# Although I'm quite certain there must be a way to make it work with Sequential.
+# Benefit of this is that is should be training mapping at the same time
+latent_input = tf.keras.layers.Input(shape=(input_size,))
+ignore_input = tf.keras.layers.Input(shape=(4, 4, latent_size))
+synthesis = ConstantLayer()(ignore_input)
+synthesis = tf.keras.layers.Flatten()(synthesis)
+synthesis = tf.keras.layers.Dense(48)(synthesis)
+synthesis = tf.keras.layers.Reshape((4, 4, 3))(synthesis)
+synthesis = NoiseLayer(1.0)(synthesis)
+synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
+synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(synthesis)
+synthesis = NoiseLayer(1.0)(synthesis)
+synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
 
-generator = Generator(mapping, synthesis)
-#generator.compile(loss="mean_squared_error", optimizer="adam")
+generator = Generator(mapping, synthesis, [latent_input, ignore_input])
 
 # Discriminator Network
 classifier = tf.keras.Sequential()
@@ -118,18 +125,18 @@ classifier.add(tf.keras.layers.Activation(tf.keras.activations.softmax))
 classifier.compile(loss="mean_squared_error", optimizer="adam", metrics=["accuracy"])
 
 discriminator = Discriminator(classifier)
-#discriminator.compile(loss="mean_squared_error", optimizer="adam")
 
 def add_resolution(generator, discriminaor):
-        generator.synthesis.add(tf.keras.layers.UpSampling2D())
-        generator.synthesis.add(tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"))
-        generator.synthesis.add(NoiseLayer(1.0))
-        generator.synthesis.add(AdaptiveInstanceNormalization(generator.mapping))
-        generator.synthesis.add(tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"))
-        generator.synthesis.add(NoiseLayer(1.0))
-        generator.synthesis.add(AdaptiveInstanceNormalization(generator.mapping))
+        generator.synthesis = tf.keras.layers.UpSampling2D()(generator.synthesis)
+        generator.synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(generator.synthesis)
+        generator.synthesis = NoiseLayer(1.0)(generator.synthesis)
+        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(latent_input), generator.synthesis])
+        generator.synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(generator.synthesis)
+        generator.synthesis = NoiseLayer(1.0)(generator.synthesis)
+        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(latent_input), generator.synthesis])
+        generator.model = tf.keras.Model(inputs=generator.inputs, outputs=generator.synthesis)
+        generator.model.compile(loss="mean_squared_error", optimizer="adam")
         # Note: could update generator.mapping with a new input vector at various resolutions
-        generator.synthesis.compile(loss="mean_squared_error", optimizer="adam")
         # To-do: smooth fade-in of the new layer as decribed in [5]
         discriminator.resolution *= 2
         discriminator.classifier = tf.keras.Sequential([tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, 3)),

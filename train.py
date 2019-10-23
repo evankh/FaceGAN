@@ -35,18 +35,18 @@ def train(g, d, epochs, batch_size=128, save_interval=50):
             noise = np.random.normal(0, 1, (half_batch, 100))
 
             # Generate a half batch of new images
-            gen_imgs = generator.predict(noise)
+            gen_imgs = generator.generate(noise)
 
             # Train the discriminator
-            d_loss_real = discriminator.train_on_batch(imgs, np.ones((half_batch, 1)))
-            d_loss_fake = discriminator.train_on_batch(gen_imgs, np.zeros((half_batch, 1)))
+            d_loss_real = discriminator.classifier.train_on_batch(imgs, np.ones((half_batch, 1)))
+            d_loss_fake = discriminator.classifier.train_on_batch(gen_imgs, np.zeros((half_batch, 1)))
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
             # ---------------------
             #  Train Generator
             # ---------------------
 
-            noise = np.random.normal(0, 1, (batch_size, 100))
+            noise = np.random.normal(0, 1, (batch_size, 64))    # 64 = input space size
 
             # The generator wants the discriminator to label the generated samples
             # as valid (ones)
