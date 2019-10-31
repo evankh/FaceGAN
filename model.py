@@ -17,15 +17,16 @@ class NoiseLayer(tf.keras.layers.Layer):
                         raise TypeError("Invalid argument for `stddev` - should be a float.")
                 self.stddev = stddev
         def build(self, input_shape):
-                self.scale = self.add_weight(shape=(1,),
+                self.scale = self.add_weight(shape=input_shape[1:],
+                                             initializer=tf.keras.initializers.zeros,
+                                             name="scaling_factor")
+                self.stddevs = self.add_weight(shape=input_shape[1:],
                                               initializer=tf.keras.initializers.zeros,
-                                              name="scaling_factor")
-                # Should it instead be per-channel scaling factors? I feel like it should
-                # And maybe per-channel standard deviations as well
+                                              name="stddev")
         def compute_output_shape(self, input_shape):
                 return input_shape
         def call(self, inputs):
-                return inputs + np.random.normal(0.0, self.stddev, inputs.shape[1:]) * self.scale
+                return inputs + K.random_normal(inputs.shape[1:], 0.0, self.stddevs) * K.expand_dims(self.scale, 0)
 
 class ConstantLayer(tf.keras.layers.Layer):
         """Creates a set of learned constants to use as initial input.
@@ -35,7 +36,7 @@ class ConstantLayer(tf.keras.layers.Layer):
                 super(ConstantLayer, self).__init__(**kwargs)
         def build(self, input_shape):
                 self.constant = self.add_weight(shape=input_shape[1:],
-                                                initializer=tf.keras.initializers.zeros,
+                                                initializer=tf.keras.initializers.ones,
                                                 name="constant")
                 super(ConstantLayer, self).build(input_shape)
         def compute_output_shape(self, input_shape):
@@ -53,24 +54,23 @@ class AdaptiveInstanceNormalizationLayer(tf.keras.layers.Layer):
                 super(AdaptiveInstanceNormalizationLayer, self).__init__(**kwargs)
         def build(self, input_shape):
                 # Learns a mapping from the latent space to per-channel Mean and StdDev
-                # This is NOT how this is supposed to work! Results in a network with over 1 Billion weights at 1024x1024!
                 assert len(input_shape) == 2
                 latent_shape, layer_shape = input_shape
-                self.stddev = self.add_weight(shape=latent_shape[1:] + layer_shape[1:],
-                                              initializer=tf.keras.initializers.ones,
-                                              name="stddev")
-                self.mean = self.add_weight(shape=latent_shape[1:] + layer_shape[1:],
-                                            initializer=tf.keras.initializers.zeros,
+                self.mean = self.add_weight(shape=latent_shape[1:] + (layer_shape[3],),
+                                            initializer=tf.keras.initializers.RandomNormal,
                                             name="mean")
+                self.stddev = self.add_weight(shape=latent_shape[1:] + (layer_shape[3],),
+                                              initializer=tf.keras.initializers.RandomNormal,
+                                              name="stddev")
         def compute_output_shape(self, input_shape):
                 assert len(input_shape) == 2
                 return input_shape[1]
         def call(self, inputs):
                 assert len(inputs) == 2
                 latent_code, layer = inputs
-                normalized = (layer - K.mean(layer, axis=0)) / K.std(layer, axis=0)     # axis=0 is the batch, so it computes the mean and stddev of each sample separately, across the whole batch
-                new_stddev = K.batch_dot(latent_code, K.expand_dims(self.stddev,0), axes=1)
-                new_mean = K.batch_dot(latent_code, K.expand_dims(self.mean,0), axes=1)
+                normalized = (layer - K.mean(layer, axis=1)) / (K.std(layer, axis=1) + K.epsilon())     # NxNxC z-scores, but they do end up as nan if the inputs are 0
+                new_mean = K.batch_dot(latent_code, K.expand_dims(self.mean, 0), axes=1)                # should be C means
+                new_stddev = K.batch_dot(latent_code, K.expand_dims(self.stddev, 0), axes=1)            # should be C stddevs
                 return new_stddev * normalized + new_mean
 
 class Generator:
@@ -83,9 +83,11 @@ class Generator:
                 self.model = tf.keras.Model(inputs=self.inputs, outputs=self.synthesis)
                 self.model.compile(loss="mean_squared_error", optimizer="adam")
         def generate(self, noise):
-                return self.model.predict([noise, np.zeros((noise.shape[0],) + initializer_size)])
+                return self.model.predict([noise, np.zeros((noise.shape[0],) + initializer_shape)])
         def train_on_batch(self, x, y):
-                return self.model.train_on_batch([x, np.zeros((x.shape[0],) + initializer_size)], y)
+                return self.model.train_on_batch([x, np.zeros((x.shape[0],) + initializer_shape)], y)
+        # Ideally, once training is finished, mapping network can be removed entirely
+        # Input would be the latent code directly, for better feature separation, which means the inputs to the AdaIN layers will have to change
 
 class Discriminator:
         """Keeps all necessary information for the discriminator in one place.
@@ -97,6 +99,7 @@ class Discriminator:
                 return K.argmax(self.classifier.predict(image))
 
 # Mapping Network
+# Takes in an input vector and outputs an intermediate latent code, intended to disentagle the input features
 mapping = tf.keras.Sequential()
 mapping.add(tf.keras.layers.Input(shape=(input_size,)))
 mapping.add(tf.keras.layers.Dense(input_size, activation="relu"))
