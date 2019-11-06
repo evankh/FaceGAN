@@ -11,11 +11,8 @@ class NoiseLayer(tf.keras.layers.Layer):
         """Adds random zero-centered Gaussian noise vector with the
         given standard deviation to the input, scaled by a learned factor.
         """
-        def __init__(self, stddev, **kwargs):
+        def __init__(self, **kwargs):
                 super(NoiseLayer, self).__init__(**kwargs)
-                if not isinstance(stddev, float):
-                        raise TypeError("Invalid argument for `stddev` - should be a float.")
-                self.stddev = stddev
         def build(self, input_shape):
                 self.scale = self.add_weight(shape=input_shape[1:],
                                              initializer=tf.keras.initializers.zeros,
@@ -83,7 +80,7 @@ class Generator:
                 self.model = tf.keras.Model(inputs=self.inputs, outputs=self.synthesis)
                 self.model.compile(loss="mean_squared_error", optimizer="adam")
         def generate(self, noise):
-                return self.model.predict([noise, np.zeros((noise.shape[0],) + initializer_shape)])
+                return self.model.predict([noise, np.zeros((noise.shape[0],) + initializer_shape)] + [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.model.input[2:]])
         def train_on_batch(self, x, y):
                 return self.model.train_on_batch([x, np.zeros((x.shape[0],) + initializer_shape)], y)
         # Ideally, once training is finished, mapping network can be removed entirely
@@ -120,10 +117,10 @@ synthesis = ConstantLayer()(ignore_input)
 synthesis = tf.keras.layers.Flatten()(synthesis)
 synthesis = tf.keras.layers.Dense(48)(synthesis)
 synthesis = tf.keras.layers.Reshape((starting_resolution, starting_resolution, 3))(synthesis)   # 3 = R, G, B
-synthesis = NoiseLayer(1.0)(synthesis)
+synthesis = NoiseLayer()(synthesis)
 synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
 synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(synthesis)
-synthesis = NoiseLayer(1.0)(synthesis)
+synthesis = NoiseLayer()(synthesis)
 synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
 
 generator = Generator(mapping, synthesis, [latent_input, ignore_input])
@@ -143,10 +140,17 @@ discriminator = Discriminator(classifier)
 def add_resolution(generator, discriminaor):
         generator.synthesis = tf.keras.layers.UpSampling2D()(generator.synthesis)
         generator.synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(generator.synthesis)
-        generator.synthesis = NoiseLayer(1.0)(generator.synthesis)
+        # Noise layers after the first are 1 resolution smaller than the layer they are being applied to, to dastically reduce the size of the network without sacrificing much quality
+        shape = (discriminator.resolution, discriminator.resolution, 3) # 3 = R, G, B
+        generator.inputs.append(tf.keras.layers.Input(shape=shape))     # Input = all zeros
+        noise = NoiseLayer()(generator.inputs[-1])
+        noise = tf.keras.layers.UpSampling2D()(noise)
+        generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
         generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(latent_input), generator.synthesis])
         generator.synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(generator.synthesis)
-        generator.synthesis = NoiseLayer(1.0)(generator.synthesis)
+        noise = NoiseLayer()(generator.inputs[-1])      # Reuse the same input layer, since it doesn't matter
+        noise = tf.keras.layers.UpSampling2D()(noise)
+        generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
         generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(latent_input), generator.synthesis])
         generator.model = tf.keras.Model(inputs=generator.inputs, outputs=generator.synthesis)
         generator.model.compile(loss="mean_squared_error", optimizer="adam")
