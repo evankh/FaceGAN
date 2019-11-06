@@ -1,76 +1,53 @@
 import tensorflow as tf
-from keras_preprocessing.image import ImageDataGenerator
+import PIL
 import numpy as np
-import os, sys
-import matplotlib.pyplot as plt
-import model
-import dataset
 
-def train(generator, discriminator, epochs, batch_size=128, save_interval=50, resolution=4):
-        half_batch = int(batch_size / 2)
+def images_to_vectors(images):
+    return images.reshape(images.size(0), 49152)
 
-        for epoch in range(epochs):
+def vectors_to_images(vectors):
+    return vectors.reshape(vectors.size(0), 3, resolution, resolution)
 
-            # ---------------------
-            #  Train Discriminator
-            # ---------------------
+DATA_FOLDER = './00000'
+NOISE_SIZE = 100
+BATCH_SIZE = 100
 
-            # Select a random half batch of images
-            imgs = dataset.get_n_images(resolution, half_batch)
-            
+num_test_samples = 16
+test_noise = noise(num_test_samples, NOISE_SIZE)
 
-            noise = np.random.normal(0, 1, (half_batch, 64))    # 64 = input space size
+num_epochs = 200
 
-            # Generate a half batch of new images
-            gen_imgs = generator.generate(noise)
+session = tf.InteractiveSession()
+tf.global_variables_initializer().run()
 
-            # Train the discriminator
-            d_loss_real = discriminator.classifier.train_on_batch(imgs, np.ones((half_batch, 1)))
-            d_loss_fake = discriminator.classifier.train_on_batch(gen_imgs, np.zeros((half_batch, 1)))
-            d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+# Iterate through epochs
+for epoch in range(num_epochs):
+    for n_batch, (batch,_) in enumerate(data_loader):
+        
+        # 1. Train Discriminator
+        X_batch = images_to_vectors(batch.permute(0, 2, 3, 1).numpy())
+        feed_dict = {X: X_batch, Z: noise(BATCH_SIZE, NOISE_SIZE)}
+        _, d_error, d_pred_real, d_pred_fake = session.run(
+            [D_opt, D_loss, D_real, D_fake], feed_dict=feed_dict
+        )
 
-            # ---------------------
-            #  Train Generator
-            # ---------------------
+        # 2. Train Generator
+        feed_dict = {Z: noise(BATCH_SIZE, NOISE_SIZE)}
+        _, g_error = session.run(
+            [G_opt, G_loss], feed_dict=feed_dict
+        )
 
-            noise = np.random.normal(0, 1, (batch_size, 64))    # 64 = input space size
-            print(noise.shape)
-
-            # The generator wants the discriminator to label the generated samples
-            # as valid (ones)
-            # Generator's training data needs to be: a set of inputs, and whether the discriminator was fooled by them
-            valid_y = discriminator.classify(generator.generate(noise))
-            # Can't do that, seems like the mapping network is never updated with the right batch size? And for some reason it's not getting it passed in
-
-            # Train the generator
-            g_loss = generator.train_on_batch(noise, valid_y)
-
-            # Plot the progress
-            print ("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[1], g_loss))
-
-            # If at save interval => save generated image samples
-            if epoch % save_interval == 0:
-                save_imgs(epoch)
-                # Should probably also save the current state of the networks periodically
-
-def save_imgs(epoch, generator):
-        r, c = 5, 5
-        noise = np.random.normal(0, 1, (r * c, 100))
-        gen_imgs = generator.predict(noise)
-
-        # Rescale images 0 - 1
-        #gen_imgs = 0.5 * gen_imgs + 0.5
-
-        fig, axs = plt.subplots(r, c)
-        cnt = 0
-        for i in range(r):
-            for j in range(c):
-                axs[i,j].imshow(gen_imgs[cnt, :,:,0], cmap='gray')
-                axs[i,j].axis('off')
-                cnt += 1
-        fig.savefig("../generated/4/%d.png" % epoch)
-        plt.close()
-
-train(model.generator, model.discriminator, epochs=3000, batch_size=32, save_interval=200, resolution=4)
-add_resolution(model.generator, model.discriminator)
-train(model.generator, model.discriminator, epochs=3000, batch_size=32, save_interval=200, resolution=8)
+        if n_batch % 100 == 0:
+            display.clear_output(True)
+            # Generate images from test noise
+            test_images = session.run(
+                G_sample, feed_dict={Z: test_noise}
+            )
+            test_images = vectors_to_images(test_images)
+            test_images = test_images.data
+            print(test_images)
+            npimages = test_images.numpy()
+            np.squeeze(npimages)
+            npimages = npimages[0,:,:]
+            img = plt.imshow(npimages[0,:,:])
+            plt.savefig("out.png")
