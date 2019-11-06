@@ -119,10 +119,6 @@ d_optimizer = optim.Adam(discriminator.parameters(), lr=learn_rate)
 g_optimizer = optim.Adam(generator.parameters(), lr=learn_rate)
 
 d_steps = 1  # In Goodfellow et. al 2014 this variable is assigned to 1
-
-# Number of steps to apply to the discriminator
-d_steps = 1  # In Goodfellow et. al 2014 this variable is assigned to 1
-# Number of epochs
 num_epochs = 200
 
 def real_data_target(size):
@@ -141,26 +137,26 @@ def train_discriminator(optimizer, real_data, fake_data):
     # Reset gradients
     optimizer.zero_grad()
     
-    # 1.1 Train on Real Data
+    # Train on real data
     prediction_real = discriminator(real_data)
     # Calculate error and backpropagate
     error_real = loss(prediction_real, real_data_target(real_data.size(0)))
     error_real.backward()
 
-    # 1.2 Train on Fake Data
+    # Train on fake data
     prediction_fake = discriminator(fake_data)
     # Calculate error and backpropagate
     error_fake = loss(prediction_fake, fake_data_target(real_data.size(0)))
     error_fake.backward()
     
-    # 1.3 Update weights with gradients
+    # Update weights with gradients
     optimizer.step()
     
     # Return error
     return error_real + error_fake, prediction_real, prediction_fake
 
 def train_generator(optimizer, fake_data):
-    # 2. Train Generator
+    # Train Generator
     # Reset gradients
     optimizer.zero_grad()
     # Sample noise and generate fake data
@@ -173,27 +169,22 @@ def train_generator(optimizer, fake_data):
     # Return error
     return error
 
-num_test_samples = 1
+num_test_samples = 1 #We can change this value to generate multiple images at a time
 test_noise = noise(num_test_samples)
 
-# Total number of epochs to train
-num_epochs = 100
 for epoch in range(num_epochs):
     for n_batch, (real_batch,_) in enumerate(data_loader):
         N = real_batch.size(0)
-        # 1. Train Discriminator
+        # Train Discriminator
         real_data = Variable(images_to_vectors(real_batch))
         # Generate fake data and detach 
         # (so gradients are not calculated for generator)
         fake_data = generator(noise(N)).detach()
-        # Train D
-        d_error, d_pred_real, d_pred_fake = \
-              train_discriminator(d_optimizer, real_data, fake_data)
+        d_error, d_pred_real, d_pred_fake = train_discriminator(d_optimizer, real_data, fake_data)
 
-        # 2. Train Generator
+        # Train Generator
         # Generate fake data
         fake_data = generator(noise(N))
-        # Train G
         g_error = train_generator(g_optimizer, fake_data)
         # Display Progress every few batches
         if (n_batch) % 100 == 0: 
@@ -205,5 +196,3 @@ for epoch in range(num_epochs):
             npimages = npimages[0,:,:]
             img = plt.imshow(npimages[0,:,:])
             plt.savefig("out.png")
-
-            
