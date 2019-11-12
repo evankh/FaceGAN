@@ -27,7 +27,8 @@ class NoiseLayer(tf.keras.layers.Layer):
 
 class ConstantLayer(tf.keras.layers.Layer):
         """Creates a set of learned constants to use as initial input.
-        Ignores any input given to it and only returns the learned weights, but must be given an input layer to match the size of.
+        Ignores any input given to it and only returns the learned weights,
+        but must be given an input layer to match the size of.
         """
         def __init__(self, **kwargs):
                 super(ConstantLayer, self).__init__(**kwargs)
@@ -43,9 +44,11 @@ class ConstantLayer(tf.keras.layers.Layer):
 
 class AdaptiveInstanceNormalizationLayer(tf.keras.layers.Layer):
         """Performs a learned AdaIN transformation.
-        Matches the mean and standard deviation of the input to the learned mean and standard deviation of the dataset.
-        Uses the input latent code as a "style" which controls factors in the generated image; the learned weights are
-        the effect each factor of the latent code has on each feature of the image.
+        Matches the mean and standard deviation of the input to the learned
+        mean and standard deviation of the dataset. Uses the input latent code
+        as a "style" which controls factors in the generated image; the learned
+        weights are the effect each factor of the latent code has on each channel
+        of the image.
         """
         def __init__(self, **kwargs):
                 super(AdaptiveInstanceNormalizationLayer, self).__init__(**kwargs)
@@ -73,16 +76,36 @@ class AdaptiveInstanceNormalizationLayer(tf.keras.layers.Layer):
 class Generator:
         """Keeps all necessary information for the generator in one place.
         """
-        def __init__(self, mapping, synthesis, inputs):
+        def __init__(self, mapping, synthesis, inputs, ignored_inputs):
                 self.mapping = mapping
                 self.synthesis = synthesis
                 self.inputs = inputs
-                self.model = tf.keras.Model(inputs=self.inputs, outputs=self.synthesis)
+                self.ignored_inputs = ignored_inputs
+                self.model = tf.keras.Model(inputs=self.inputs + self.ignored_inputs, outputs=self.synthesis)
                 self.model.compile(loss="mean_squared_error", optimizer="adam")
-        def generate(self, noise):
-                return self.model.predict([noise, np.zeros((noise.shape[0],) + initializer_shape)] + [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.model.input[2:]])
-        def train_on_batch(self, x, y):
-                return self.model.train_on_batch([x, np.zeros((x.shape[0],) + initializer_shape)], y)
+        def generate(self, noise, use_crossover=False, crossover_layer=0, crossover_noise=0):
+                # Inputs:
+                #  - input code to use at each layer (Each layer could use a separate one, but is currently only set up to use 2)
+                #  - ignored input fed to the constant layer
+                #  - several zero inputs fed to the reduced-resolution noise layers
+                # crossover_layer is the index of the first resolution to use the second input code
+                if not use_crossover:
+                        return self.model.predict([noise for i in self.inputs] +
+                                                  [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
+                else:
+                        assert noise.shape == crossover_noise.shape
+                        return self.model.predict([noise for i in self.inputs[:crossover_layer]] +
+                                                  [crossover_noise for i in self.inputs[crossover_layer:]] +
+                                                  [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
+        def train_on_batch(self, x, y, use_crossover=False, crossover_layer=0, x_2=0):
+                if not use_crossover:
+                        return self.model.train_on_batch([x for i in self.inputs] +
+                                                         [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs], y)
+                else:
+                        assert x.shape == x_2.shape
+                        return self.model.train_on_batch([x for i in self.inputs[:crossover_layer]] +
+                                                         [x_2 for i in self.inputs[crossover_layer:]] +
+                                                         [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs], y)
         # Ideally, once training is finished, mapping network can be removed entirely
         # Input would be the latent code directly, for better feature separation, which means the inputs to the AdaIN layers will have to change
 
@@ -123,7 +146,7 @@ synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(syn
 synthesis = NoiseLayer()(synthesis)
 synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
 
-generator = Generator(mapping, synthesis, [latent_input, ignore_input])
+generator = Generator(mapping, synthesis, [latent_input,], [ignore_input,])
 
 # Discriminator Network
 classifier = tf.keras.Sequential()
@@ -142,17 +165,18 @@ def add_resolution(generator, discriminaor):
         generator.synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(generator.synthesis)
         # Noise layers after the first are 1 resolution smaller than the layer they are being applied to, to dastically reduce the size of the network without sacrificing much quality
         shape = (discriminator.resolution, discriminator.resolution, 3) # 3 = R, G, B
-        generator.inputs.append(tf.keras.layers.Input(shape=shape))     # Input = all zeros
-        noise = NoiseLayer()(generator.inputs[-1])
+        generator.inputs.append(tf.keras.layers.Input(shape=(input_size,)))     # Add a new input for each resolution, used for crossover training
+        generator.ignored_inputs.append(tf.keras.layers.Input(shape=shape))     # Input = all zeros
+        noise = NoiseLayer()(generator.ignored_inputs[-1])
         noise = tf.keras.layers.UpSampling2D()(noise)
         generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
-        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(latent_input), generator.synthesis])
+        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
         generator.synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(generator.synthesis)
-        noise = NoiseLayer()(generator.inputs[-1])      # Reuse the same input layer, since it doesn't matter
+        noise = NoiseLayer()(generator.ignored_inputs[-1])      # Reuse the same input layer, since it doesn't matter
         noise = tf.keras.layers.UpSampling2D()(noise)
         generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
-        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(latent_input), generator.synthesis])
-        generator.model = tf.keras.Model(inputs=generator.inputs, outputs=generator.synthesis)
+        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
+        generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.synthesis)
         generator.model.compile(loss="mean_squared_error", optimizer="adam")
         # Note: could update generator.mapping with a new input vector at various resolutions
         # To-do: smooth fade-in of the new layer as decribed in [5]
