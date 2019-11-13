@@ -55,7 +55,7 @@ class AdaptiveInstanceNormalizationLayer(tf.keras.layers.Layer):
         def build(self, input_shape):
                 # Learns a mapping from the latent space to per-channel Mean and StdDev
                 assert len(input_shape) == 2
-                latent_shape, layer_shape = input_shape
+                latent_shape, layer_shape = input_shape         # Nonex64, NonexNxNx3
                 self.mean = self.add_weight(shape=latent_shape[1:] + (layer_shape[3],),
                                             initializer=tf.keras.initializers.RandomNormal,
                                             name="mean")
@@ -67,10 +67,12 @@ class AdaptiveInstanceNormalizationLayer(tf.keras.layers.Layer):
                 return input_shape[1]
         def call(self, inputs):
                 assert len(inputs) == 2
-                latent_code, layer = inputs
-                normalized = (layer - K.mean(layer, axis=1)) / (K.std(layer, axis=1) + K.epsilon())     # NxNxC z-scores, but they do end up as nan if the inputs are 0
-                new_mean = K.batch_dot(latent_code, K.expand_dims(self.mean, 0), axes=1)                # should be C means
-                new_stddev = K.batch_dot(latent_code, K.expand_dims(self.stddev, 0), axes=1)            # should be C stddevs
+                latent_code, layer = inputs                                                     # Bx64, BxNxNxC
+                old_mean = K.mean(layer, axis=[1,2], keepdims=True)                             # Bx1x1xC means
+                old_stddev = K.std(layer, axis=[1,2], keepdims=True)                            # Bx1x1xC stddevs
+                normalized = (layer - old_mean) / (old_stddev + K.epsilon())                    # BxNxNxC z-scores
+                new_mean = K.expand_dims(K.expand_dims(K.dot(latent_code, self.mean), axis=1), axis=1)          # should be Bx1x1xC means, but dot produces BxC
+                new_stddev = K.expand_dims(K.expand_dims(K.dot(latent_code, self.stddev), axis=1), axis=1)      # should be Bx1x1xC stddevs, but dot produce BxC
                 return new_stddev * normalized + new_mean
 
 class Generator:
@@ -85,13 +87,15 @@ class Generator:
                 self.model.compile(loss="mean_squared_error", optimizer="adam")
         def generate(self, noise, use_crossover=False, crossover_layer=0, crossover_noise=0):
                 # Inputs:
-                #  - input code to use at each layer (Each layer could use a separate one, but is currently only set up to use 2)
-                #  - ignored input fed to the constant layer
+                #  - one input code for each resolution (Each layer could use a separate one, but it is currently only set up to use 2)
+                #  - one ignored input fed to the constant layer
                 #  - several zero inputs fed to the reduced-resolution noise layers
                 # crossover_layer is the index of the first resolution to use the second input code
                 if not use_crossover:
-                        return self.model.predict([noise for i in self.inputs] +
-                                                  [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
+                        #return self.model.predict([noise for i in self.inputs] +
+                         #                         [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
+                         return self.model([noise for i in self.inputs] +
+                                           [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
                 else:
                         assert noise.shape == crossover_noise.shape
                         return self.model.predict([noise for i in self.inputs[:crossover_layer]] +
