@@ -85,31 +85,39 @@ class Generator:
                 self.ignored_inputs = ignored_inputs
                 self.model = tf.keras.Model(inputs=self.inputs + self.ignored_inputs, outputs=self.synthesis)
                 self.model.compile(loss="mean_squared_error", optimizer="adam")
-        def generate(self, noise, use_crossover=False, crossover_layer=0, crossover_noise=0):
+                self.loss = None
+        def generate(self, noise, crossover_noise=None, crossover_layer=0):
                 # Inputs:
                 #  - one input code for each resolution (Each layer could use a separate one, but it is currently only set up to use 2)
                 #  - one ignored input fed to the constant layer
                 #  - several zero inputs fed to the reduced-resolution noise layers
                 # crossover_layer is the index of the first resolution to use the second input code
-                if not use_crossover:
-                        #return self.model.predict([noise for i in self.inputs] +
-                         #                         [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
-                         return self.model([noise for i in self.inputs] +
-                                           [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
+                if crossover_noise is None:
+                        return self.model([noise for i in self.inputs] +
+                                          [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
                 else:
                         assert noise.shape == crossover_noise.shape
-                        return self.model.predict([noise for i in self.inputs[:crossover_layer]] +
-                                                  [crossover_noise for i in self.inputs[crossover_layer:]] +
-                                                  [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
-        def train_on_batch(self, x, y, use_crossover=False, crossover_layer=0, x_2=0):
-                if not use_crossover:
-                        return self.model.train_on_batch([x for i in self.inputs] +
-                                                         [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs], y)
+                        return self.model([noise for i in self.inputs[:crossover_layer]] +
+                                          [crossover_noise for i in self.inputs[crossover_layer:]] +
+                                          [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
+        def train_on_batch(self, x, y, discriminator, crossover_x=None, crossover_layer=0):
+                discriminator.classifier.trainable = False
+                gan = tf.keras.Model(inputs=self.inputs + self.ignored_inputs, outputs=discriminator.classifier(tf.keras.layers.Activation("sigmoid")(self.model.output)))
+                gan.compile(loss="mean_squared_error", optimizer="adam")
+                if crossover_x is None:
+                        self.loss = gan.train_on_batch([x for i in self.inputs] +
+                                                       [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs], y)
                 else:
-                        assert x.shape == x_2.shape
-                        return self.model.train_on_batch([x for i in self.inputs[:crossover_layer]] +
-                                                         [x_2 for i in self.inputs[crossover_layer:]] +
-                                                         [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs], y)
+                        assert x.shape == crossover_x.shape
+                        self.loss = gan.train_on_batch([x for i in self.inputs[:crossover_layer]] +
+                                                       [crossover_x for i in self.inputs[crossover_layer:]] +
+                                                       [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs], y)
+                discriminator.classifier.trainable = True
+                return self.loss
+        def get_loss(self):
+                if self.loss:
+                        return self.loss
+                return float("inf")
         # Ideally, once training is finished, mapping network can be removed entirely
         # Input would be the latent code directly, for better feature separation, which means the inputs to the AdaIN layers will have to change
 
@@ -120,7 +128,7 @@ class Discriminator:
                 self.classifier = classifier
                 self.resolution = starting_resolution
         def classify(self, image):
-                return K.argmax(self.classifier.predict(image))
+                return self.classifier.predict(image)
 
 # Mapping Network
 # Takes in an input vector and outputs an intermediate latent code, intended to disentagle the input features
@@ -160,7 +168,7 @@ classifier.add(tf.keras.layers.Flatten())
 classifier.add(tf.keras.layers.Dense(8, activation="relu"))
 classifier.add(tf.keras.layers.Dense(2, activation="relu"))
 classifier.add(tf.keras.layers.Activation(tf.keras.activations.softmax))
-classifier.compile(loss="sparse_categorical_crossentropy", optimizer="adam", metrics=["accuracy"])
+classifier.compile(loss="categorical_crossentropy", optimizer="adam", metrics=["accuracy"])
 
 discriminator = Discriminator(classifier)
 
@@ -188,3 +196,4 @@ def add_resolution(generator, discriminaor):
         discriminator.classifier = tf.keras.Sequential([tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, 3)),
                                                         tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"),
                                                         tf.keras.layers.AveragePooling2D()] + discriminator.classifier.layers)
+        discriminator.classifier.compile(loss="categorical_crossentropy", optimizer="adam", metrics=["accuracy"])

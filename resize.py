@@ -1,14 +1,14 @@
 from PIL import Image
 import os
 
-base = "../00000/"
+base = "../img/"
 out_sizes = [4, 8, 16, 32, 64]
-in_folder = "128/"
+in_folder = "128/00000/"
 
 dirs = os.listdir(base + in_folder)
 
 for size in out_sizes:
-	out_folder = base + str(size) + "/"
+	out_folder = base + str(size) + "/00000/"
 	if not os.path.exists(out_folder):
 		os.mkdir(out_folder)
 	for item in dirs:
