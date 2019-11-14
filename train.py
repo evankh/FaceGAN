@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+import matplotlib.pyplot as plot
 
 import model
 import dataset
@@ -11,11 +12,14 @@ def get_random_seeds(num_seeds):
 test_seed = get_random_seeds(1)
 epoch = 0
 iterations = 0
+gen_losses = []
+dis_losses = []
+dis_accuracy = []
 
 loss_threshold = 0.01   # When the network reaches this loss, add a new resolution
 max_resolution = 128    # Highest resolution to train to
 batch_size = 32         # Number of images to train on at a time
-max_iterations = 500    # If training reaches this many epochs without starting over, quit
+max_iterations = 1000   # If training reaches this many epochs without starting over, quit
 crossover_freq = 5      # 1 in X epochs will train using crossover
 save_freq = 10          # Save example images every X epochs
 output_freq = 5         # Output a status update every X epochs
@@ -53,6 +57,9 @@ while model.discriminator.resolution <= max_resolution:
                         dataset.save_image(resolution, epoch, test_image.numpy()[0])
                 epoch += 1
                 iterations += 1
+                gen_losses.append(model.generator.get_loss())
+                dis_losses.append(d_loss[0])
+                dis_accuracy.append(d_loss[1])
         if model.discriminator.resolution == max_resolution:
                 dataset.clean("final")
                 final1 = get_random_seeds(1)
@@ -73,3 +80,9 @@ while model.discriminator.resolution <= max_resolution:
                 model.generator.loss = None
                 iterations = 0
 print("Done training.")
+
+def plot_losses():
+        plot.plot(gen_losses)
+        plot.plot(dis_losses)
+        plot.plot(dis_accuracy)
+        plot.show()

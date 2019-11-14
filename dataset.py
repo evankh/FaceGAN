@@ -23,7 +23,10 @@ def get_n_images(size, num):
         return len(ret), np.array(ret)
 
 def save_image(size, name, image):
-        out_folder = base + str(size) + "/gen/"
+        out_folder = base + str(size)
+        if not os.path.exists(out_folder):
+                os.mkdir(out_folder)
+        out_folder +=  "/gen/"
         if not os.path.exists(out_folder):
                 os.mkdir(out_folder)
         im = Image.fromarray(((image + 1.0) * 127.5).astype(np.uint8))
