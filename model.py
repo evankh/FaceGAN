@@ -6,6 +6,7 @@ input_size = 64
 latent_size = 64
 initializer_shape = (4, 4, latent_size)
 starting_resolution = 4
+K.set_floatx("float64")
 
 class NoiseLayer(tf.keras.layers.Layer):
         """Adds random zero-centered Gaussian noise vector with the
@@ -84,7 +85,6 @@ class Generator:
                 self.inputs = inputs
                 self.ignored_inputs = ignored_inputs
                 self.model = tf.keras.Model(inputs=self.inputs + self.ignored_inputs, outputs=self.synthesis)
-                self.model.compile(loss="mean_squared_error", optimizer="adam")
                 self.loss = None
         def generate(self, noise, crossover_noise=None, crossover_layer=0):
                 # Inputs:
@@ -102,8 +102,8 @@ class Generator:
                                           [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
         def train_on_batch(self, x, y, discriminator, crossover_x=None, crossover_layer=0):
                 discriminator.classifier.trainable = False
-                gan = tf.keras.Model(inputs=self.inputs + self.ignored_inputs, outputs=discriminator.classifier(tf.keras.layers.Activation("sigmoid")(self.model.output)))
-                gan.compile(loss="mean_squared_error", optimizer="adam")
+                gan = tf.keras.Model(inputs=self.inputs + self.ignored_inputs, outputs=discriminator.classifier(self.model.output))
+                gan.compile(loss="binary_crossentropy", optimizer="adam")
                 if crossover_x is None:
                         self.loss = gan.train_on_batch([x for i in self.inputs] +
                                                        [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs], y)
@@ -166,9 +166,8 @@ classifier.add(tf.keras.layers.Input((starting_resolution, starting_resolution, 
 classifier.add(tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"))
 classifier.add(tf.keras.layers.Flatten())
 classifier.add(tf.keras.layers.Dense(8, activation="relu"))
-classifier.add(tf.keras.layers.Dense(2, activation="relu"))
-classifier.add(tf.keras.layers.Activation(tf.keras.activations.softmax))
-classifier.compile(loss="categorical_crossentropy", optimizer="adam", metrics=["accuracy"])
+classifier.add(tf.keras.layers.Dense(1, activation="sigmoid"))
+classifier.compile(loss="binary_crossentropy", optimizer="adam", metrics=["binary_accuracy"])
 
 discriminator = Discriminator(classifier)
 
@@ -184,16 +183,16 @@ def add_resolution(generator, discriminaor):
         generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
         generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
         generator.synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(generator.synthesis)
-        noise = NoiseLayer()(generator.ignored_inputs[-1])      # Reuse the same input layer, since it doesn't matter
+        noise = NoiseLayer()(generator.ignored_inputs[-1])      # Reuse the same input layer, since it's being ignored anyway
         noise = tf.keras.layers.UpSampling2D()(noise)
         generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
         generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
         generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.synthesis)
-        generator.model.compile(loss="mean_squared_error", optimizer="adam")
+        generator.model.compile(loss="binary_crossentropy", optimizer="adam")
         # Note: could update generator.mapping with a new input vector at various resolutions
         # To-do: smooth fade-in of the new layer as decribed in [5]
         discriminator.resolution *= 2
         discriminator.classifier = tf.keras.Sequential([tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, 3)),
                                                         tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same"),
                                                         tf.keras.layers.AveragePooling2D()] + discriminator.classifier.layers)
-        discriminator.classifier.compile(loss="categorical_crossentropy", optimizer="adam", metrics=["accuracy"])
+        discriminator.classifier.compile(loss="binary_crossentropy", optimizer="adam", metrics=["binary_accuracy"])
