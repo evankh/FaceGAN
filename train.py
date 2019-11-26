@@ -23,8 +23,8 @@ def plot_losses():
         plot.show()
 
 def plot_confidence():
-        real_conf = [i[0] for i in model.discriminator.classify(dataset.get_n_images(16,100)[1])]
-        fake_conf = [i[0] for i in model.discriminator.classify(model.generator.generate(np.random.normal(0,1,(100,64))))]
+        real_conf = [i[0] for i in model.discriminator.classify(dataset.get_n_images(model.discriminator.resolution, 100)[1])]
+        fake_conf = [i[0] for i in model.discriminator.classify(model.generator.generate(get_random_seeds(100)))]
         plot.hist([real_conf, fake_conf])
         plot.show()
 
@@ -66,7 +66,7 @@ while model.discriminator.resolution <= max_resolution:
                 model.generator.model.trainable = True
                 model.discriminator.classifier.trainable = False
                 labels = np.ones(batch_size)    # All fake images are labeled as true
-                if epoch % crossover_freq == 0:
+                if model.discriminator.resolution >= 8 and epoch % crossover_freq == 0:
                         model.generator.train_on_batch(get_random_seeds(batch_size),
                                                        labels,
                                                        model.discriminator,

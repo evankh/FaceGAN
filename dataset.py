@@ -11,7 +11,7 @@ def get_image(size):
                 in_folder = os.path.join(base, str(size), str(n).rjust(5, '0'))
                 if os.path.exists(in_folder):
                         for item in os.listdir(in_folder):
-                                im = Image.open(in_folder + item)
+                                im = Image.open(os.path.join(in_folder, item))
                                 yield np.array(im, dtype=np.float32) / 127.5 - 1.0
                                 im.close()
 
