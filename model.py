@@ -153,10 +153,12 @@ synthesis = tf.keras.layers.Flatten()(synthesis)
 synthesis = tf.keras.layers.Dense(48)(synthesis)
 synthesis = tf.keras.layers.Reshape((starting_resolution, starting_resolution, 3))(synthesis)   # 3 = R, G, B
 synthesis = NoiseLayer()(synthesis)
-synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
+#synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
+synthesis = AdaptiveInstanceNormalizationLayer()([latent_input, synthesis])
 synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(synthesis)
 synthesis = NoiseLayer()(synthesis)
-synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
+#synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
+synthesis = AdaptiveInstanceNormalizationLayer()([latent_input, synthesis])
 
 generator = Generator(mapping, synthesis, [latent_input,], [ignore_input,])
 
@@ -181,12 +183,14 @@ def add_resolution(generator, discriminaor):
         noise = NoiseLayer()(generator.ignored_inputs[-1])
         noise = tf.keras.layers.UpSampling2D()(noise)
         generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
-        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
+        #generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
+        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
         generator.synthesis = tf.keras.layers.Conv2D(filters=3, kernel_size=3, padding="same")(generator.synthesis)
         noise = NoiseLayer()(generator.ignored_inputs[-1])      # Reuse the same input layer, since it's being ignored anyway
         noise = tf.keras.layers.UpSampling2D()(noise)
         generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
-        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
+        #generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
+        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
         generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.synthesis)
         generator.model.compile(loss="binary_crossentropy", optimizer="adam")
         # Note: could update generator.mapping with a new input vector at various resolutions
