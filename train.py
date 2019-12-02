@@ -36,11 +36,13 @@ gen_losses = []
 dis_losses = []
 dis_accuracy = []
 
-loss_threshold = 0.001  # When the network reaches this loss, add a new resolution
-accuracy_max = 0.9      # Don't train the discriminator above this accuracy threshold
+loss_threshold = 0.01   # When the network reaches this loss, add a new resolution
+accuracy_max = 0.8      # Don't train the discriminator above this accuracy threshold
 max_resolution = 128    # Highest resolution to train to
 batch_size = 50         # Number of images to train on at a time
 min_iterations = 100    # Train for at least this many iterations before adding another resolution
+disc_iter = 1           # Train the discriminator this many times per epoch
+gen_iter = 2            # Train the generator this many times per epoch
 crossover_freq = 5      # 1 in X epochs will train using crossover
 save_freq = 10          # Save example images every X epochs
 output_freq = 1         # Output a status update every X epochs
@@ -55,12 +57,13 @@ while model.discriminator.resolution <= max_resolution:
                 # 1. Train Discriminator
                 if d_acc < accuracy_max:  # Temporarily stop training the discriminator if it's doing too well
                         model.generator.model.trainable = False
-                        model.discriminator.classifier.trainable = True
-                        num_reals, reals = dataset.get_n_images(resolution, batch_size // 2)
-                        fakes = model.generator.generate(get_random_seeds(batch_size - num_reals))
-                        labels = np.concatenate((np.ones((num_reals, 1)), np.zeros((batch_size - num_reals, 1))))
-                        images, labels = shuffle(np.concatenate((reals, fakes)), labels)        # Shuffle the real and fake images together
-                        d_loss, d_acc = model.discriminator.classifier.train_on_batch(images, labels)
+                        model.discriminator.model.trainable = True
+                        for i in range(disc_iter):
+                                num_reals, reals = dataset.get_n_images(resolution, batch_size // 2)
+                                fakes = model.generator.generate(get_random_seeds(batch_size - num_reals))
+                                labels = np.concatenate((np.ones((num_reals, 1)), np.zeros((batch_size - num_reals, 1))))
+                                images, labels = shuffle(np.concatenate((reals, fakes)), labels)        # Shuffle the real and fake images together
+                                d_loss, d_acc = model.discriminator.model.train_on_batch(images, labels)
                         dis_losses.append(d_loss)
                         dis_accuracy.append(d_acc)
                 else:
@@ -69,16 +72,17 @@ while model.discriminator.resolution <= max_resolution:
                         d_acc = 0
                 # 2. Train Generator
                 model.generator.model.trainable = True
-                model.discriminator.classifier.trainable = False
+                model.discriminator.model.trainable = False
                 labels = np.ones(batch_size)    # All fake images are labeled as true
-                if model.discriminator.resolution >= 8 and epoch % crossover_freq == 0:
-                        model.generator.train_on_batch(get_random_seeds(batch_size),
-                                                       labels,
-                                                       model.discriminator,
-                                                       get_random_seeds(batch_size),
-                                                       random.randint(1, len(model.generator.inputs) - 1))
-                else:
-                        model.generator.train_on_batch(get_random_seeds(batch_size), labels, model.discriminator)
+                for i in range(gen_iter):
+                        if model.discriminator.resolution >= 8 and epoch % crossover_freq == 0:
+                                model.generator.train_on_batch(get_random_seeds(batch_size),
+                                                               labels,
+                                                               model.discriminator,
+                                                               get_random_seeds(batch_size),
+                                                               random.randint(1, len(model.generator.inputs) - 1))
+                        else:
+                                model.generator.train_on_batch(get_random_seeds(batch_size), labels, model.discriminator)
                 gen_losses.append(model.generator.get_loss())
                 if epoch % output_freq == 0:
                         print("Finished epoch", epoch, "with generator loss %.6f and discriminator loss %.6f and accuracy %.6f" % (model.generator.get_loss(), d_loss, d_acc))
