@@ -4,25 +4,38 @@ import shutil
 import numpy as np
 
 base = "../img/"
-num_sets = 1
+num_sets = 5
 
 def get_image(size):
-        for n in range(num_sets):
-                in_folder = os.path.join(base, str(size), str(n).rjust(5, '0'))
-                if os.path.exists(in_folder):
-                        for item in os.listdir(in_folder):
-                                im = Image.open(os.path.join(in_folder, item))
-                                yield np.array(im, dtype=np.float32) / 127.5 - 1.0
-                                im.close()
+        if get_image.item == 1000:
+                get_image.n += 1
+                get_image.item = 0
+        else:
+                get_image.item += 1
+        if get_image.n == num_sets:
+                get_image.n = 0
+        in_folder = os.path.join(base, str(size), str(get_image.n * 1000).rjust(5, '0'))
+        if os.path.exists(in_folder):
+                filename = os.path.join(in_folder, str(get_image.n * 1000 + get_image.item).rjust(5, "0") + ".png")
+                print(filename)
+                if os.path.exists(filename):
+                        im = Image.open(filename)
+                        val = np.array(im, dtype=np.float32) / 127.5 - 1.0
+                        im.close()
+                        return val
+get_image.n = 0
+get_image.item = 0
 
 def get_n_images(size, num):
-        ret = []
-        for i in get_image(size):
-                ret.append(i)
-                num = num - 1
-                if num == 0:
-                        break
-        return len(ret), np.array(ret)
+        return [get_image(size) for i in range(num)]
+##        ret = []
+##        for i in range(num):
+##                ret.append(get_image(size)
+##                ret.append(i)
+##                num = num - 1
+##                if num == 0:
+##                        break
+##        return len(ret), np.array(ret)
 
 def save_image(size, name, image):
         out_folder = base + str(size)

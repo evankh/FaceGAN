@@ -2,12 +2,16 @@ import tensorflow as tf
 import tensorflow.keras.backend as K
 import numpy as np
 
-input_size = 64
-latent_size = 64
-initializer_shape = (4, 4, latent_size)
-starting_resolution = 4
-num_channels = 6
 K.set_floatx("float64")
+# Model Parameters
+input_size = 64                 # Dimensionality of input space
+latent_size = 64                # Dimaensionality of latent space
+initializer_shape = (4, 4, latent_size) # Shape of constant initialization layer
+starting_resolution = 8         # Initial resolution of images
+num_channels = 3                # Number of internal channels to use, to hopefully have more information to work with than just RGB
+use_smaller_noise = False       # Use noise textures one resolution smaller than the current resolution, to significantly decrease the size of the network
+use_mapping = False             # Use a mapping network to generate a latent code from the input code
+use_second_block = False        # Use two Convolution - Noise - AdaIN blocks for each resolution
 
 class NoiseLayer(tf.keras.layers.Layer):
         """Adds random zero-centered Gaussian noise to the input, with a learned
@@ -19,13 +23,9 @@ class NoiseLayer(tf.keras.layers.Layer):
                 self.scale = self.add_weight(shape=input_shape[1:],
                                              initializer=tf.keras.initializers.zeros,
                                              name="scaling_factor")
-##                self.stddevs = self.add_weight(shape=input_shape[1:],
-##                                               initializer=tf.keras.initializers.ones,
-##                                               name="stddev")
         def compute_output_shape(self, input_shape):
                 return input_shape
         def call(self, inputs):
-                #return inputs + K.random_normal(inputs.shape[1:], 0.0, self.stddevs) * K.expand_dims(self.scale, 0) * 0.01
                 return inputs + K.random_normal(inputs.shape[1:3] + (1,), 0.0, 1.0) * K.expand_dims(self.scale, 0)
 
 class ConstantLayer(tf.keras.layers.Layer):
@@ -58,7 +58,7 @@ class AdaptiveInstanceNormalizationLayer(tf.keras.layers.Layer):
         def build(self, input_shape):
                 # Learns a mapping from the latent space to per-channel Mean and StdDev
                 assert len(input_shape) == 2
-                latent_shape, layer_shape = input_shape         # Nonex64, NonexNxNx3
+                latent_shape, layer_shape = input_shape         # Nonex64, NonexNxNxC
                 self.mean = self.add_weight(shape=latent_shape[1:] + (layer_shape[3],),
                                             initializer=tf.keras.initializers.RandomNormal,
                                             name="mean")
@@ -127,7 +127,7 @@ class Generator:
 class Discriminator:
         """Keeps all necessary information for the discriminator in one place.
         """
-        def __init__(self, classifier):#, image_input):
+        def __init__(self, classifier):
                 self.classifier = classifier
                 self.resolution = starting_resolution
                 self.fromRGB = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=1)
@@ -159,12 +159,16 @@ synthesis = tf.keras.layers.Flatten()(synthesis)
 synthesis = tf.keras.layers.Dense(starting_resolution * starting_resolution * num_channels)(synthesis)
 synthesis = tf.keras.layers.Reshape((starting_resolution, starting_resolution, num_channels))(synthesis)
 synthesis = NoiseLayer()(synthesis)
-#synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
-synthesis = AdaptiveInstanceNormalizationLayer()([latent_input, synthesis])
+if use_mapping:
+        synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
+else:
+        synthesis = AdaptiveInstanceNormalizationLayer()([latent_input, synthesis])
 synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same")(synthesis)
 synthesis = NoiseLayer()(synthesis)
-#synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
-synthesis = AdaptiveInstanceNormalizationLayer()([latent_input, synthesis])
+if use_mapping:
+        synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
+else:
+        synthesis = AdaptiveInstanceNormalizationLayer()([latent_input, synthesis])
 
 generator = Generator(mapping, synthesis, [latent_input,], [ignore_input,])
 
@@ -185,18 +189,29 @@ def add_resolution(generator, discriminaor):
         # Noise layers after the first are 1 resolution smaller than the layer they are being applied to, to dastically reduce the size of the network without sacrificing much quality
         shape = (discriminator.resolution, discriminator.resolution, num_channels)
         generator.inputs.append(tf.keras.layers.Input(shape=(input_size,)))     # Add a new input for each resolution, used for crossover training
-        generator.ignored_inputs.append(tf.keras.layers.Input(shape=shape))     # Input = all zeros
-        noise = NoiseLayer()(generator.ignored_inputs[-1])
-        noise = tf.keras.layers.UpSampling2D()(noise)
-        generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
-        #generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
-        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
-        generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same")(generator.synthesis)
-        noise = NoiseLayer()(generator.ignored_inputs[-1])      # Reuse the same input layer, since it's being ignored anyway
-        noise = tf.keras.layers.UpSampling2D()(noise)
-        generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
-        #generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
-        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
+        if use_smaller_noise:
+                generator.ignored_inputs.append(tf.keras.layers.Input(shape=shape))     # Input = all zeros
+                noise = NoiseLayer()(generator.ignored_inputs[-1])
+                noise = tf.keras.layers.UpSampling2D()(noise)
+                generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
+        else:
+                generator.synthesis = NoiseLayer()(generator.synthesis)
+        if use_mapping:
+                generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
+        else:
+                generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
+        if use_second_block:
+                generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same")(generator.synthesis)
+                if use_smaller_noise:
+                        noise = NoiseLayer()(generator.ignored_inputs[-1])      # Reuse the same input layer, since it's being ignored anyway
+                        noise = tf.keras.layers.UpSampling2D()(noise)
+                        generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
+                else:
+                        generator.synthesis = NoiseLayer()(generator.synthesis)
+                if use_mapping:
+                        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
+                else:
+                        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
         generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.toRGB(generator.synthesis))
         generator.model.compile(loss="binary_crossentropy", optimizer="adam")
         # To-do: smooth fade-in of the new layer as decribed in [5]

@@ -29,25 +29,25 @@ def plot_confidence():
         plot.show()
 
 # Training parameters
-test_seed = get_random_seeds(1)
-epoch = 0
-iterations = 0
-gen_losses = []
-dis_losses = []
-dis_accuracy = []
+test_seed = get_random_seeds(1) # Use the same seed for all test images for consistency
+epoch = 0               # Number of epochs trained total
+iterations = 0          # Iterations performed at the current resolution
+d_loss = 0              # Loss of the discriminator on the last iteration
+d_acc = 0               # Accuracy of the discriminator on the last iteration
+gen_losses = []         # History of the generator loss
+dis_losses = []         # History of the discriminator loss
+dis_accuracy = []       # History of the discriminator accuracy
 
 loss_threshold = 0.01   # When the network reaches this loss, add a new resolution
 accuracy_max = 0.8      # Don't train the discriminator above this accuracy threshold
 max_resolution = 128    # Highest resolution to train to
 batch_size = 50         # Number of images to train on at a time
 min_iterations = 100    # Train for at least this many iterations before adding another resolution
-disc_iter = 1           # Train the discriminator this many times per epoch
-gen_iter = 2            # Train the generator this many times per epoch
+disc_iter = 4           # Train the discriminator this many times per epoch
+gen_iter = 3            # Train the generator this many times per epoch
 crossover_freq = 5      # 1 in X epochs will train using crossover
 save_freq = 10          # Save example images every X epochs
 output_freq = 1         # Output a status update every X epochs
-d_loss = 0              # Loss of the discriminator on the last iteration
-d_acc = 0               # Accuracy of the discriminator on the last iteration
 
 print("Begun training.")
 while model.discriminator.resolution <= max_resolution:
@@ -75,7 +75,7 @@ while model.discriminator.resolution <= max_resolution:
                 model.discriminator.model.trainable = False
                 labels = np.ones(batch_size)    # All fake images are labeled as true
                 for i in range(gen_iter):
-                        if model.discriminator.resolution >= 8 and epoch % crossover_freq == 0:
+                        if model.discriminator.resolution > model.starting_resolution and epoch % crossover_freq == 0:
                                 model.generator.train_on_batch(get_random_seeds(batch_size),
                                                                labels,
                                                                model.discriminator,
@@ -102,8 +102,7 @@ while model.discriminator.resolution <= max_resolution:
                 dataset.save_image("final", "BA", model.generator.generate(final2, final1, 3).numpy()[0])
                 break
         else:
-                print("Adding resolution: ", model.discriminator.resolution * 2, "x",
-                      model.discriminator.resolution * 2, sep="")
+                print("Adding resolution: ", model.discriminator.resolution * 2, "x", model.discriminator.resolution * 2, sep="")
                 model.add_resolution(model.generator, model.discriminator)
                 model.generator.loss = None
                 iterations = 0
