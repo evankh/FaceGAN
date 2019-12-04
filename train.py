@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plot
 import random
+import os
 
 import model
 import dataset
@@ -35,6 +36,44 @@ def plot_confidence():
         plot.draw()
         plot.pause(0.001)
 
+def save_model():
+        if not os.path.exists("models"):
+                os.mkdir("models")
+        with open("models\gan.json", "w") as out:
+                out.write(gan.to_json())
+        with open("models\disc_model.json", "w") as out:
+                out.write(model.discriminator.model.to_json())
+        with open("models\disc_class.json", "w") as out:
+                out.write(model.discriminator.classifier.to_json())
+        with open("models\gen_model.json", "w") as out:
+                out.write(model.generator.model.to_json())
+        gan.save_weights("models\gan_weights")
+        model.discriminator.model.save_weights("models\disc_model_weights")
+        model.discriminator.classifier.save_weights("models\disc_class_weights")
+        model.generator.model.save_weights("models\gen_model_weights")
+
+def load_model():
+        if os.path.exists("models") and os.path.isdir("models"):
+                gen_model = None
+                disc_class = None
+                disc_model = None
+                gan = None
+                custom_layers = {"ConstantLayer":model.ConstantLayer, "NoiseLayer":model.NoiseLayer, "AdaptiveInstanceNormalizationLayer":model.AdaptiveInstanceNormalizationLayer}
+                with open("models\gen_model.json", "r") as In:
+                        gen_model = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
+                        gen_model.load_weights("models\gen_model_weights")
+                with open("models\disc_class.json", "r") as In:
+                        disc_class = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
+                        disc_class.load_weights("models\disc_class_weights")
+                with open("models\disc_model.json", "r") as In:
+                        disc_model = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
+                        disc_model.load_weights("models\disc_model_weights")
+                with open("models\gan.json", "r") as In:
+                        gan = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
+                        gan.load_weights("models\gan_weights")
+                return gan, gen_model, disc_model, disc_class
+        return None
+
 # Training parameters
 test_seed = get_random_seeds(1) # Use the same seed for all test images for consistency
 epoch = 0               # Number of epochs trained total
@@ -60,6 +99,14 @@ crossover_freq = 5      # 1 in X epochs will train using crossover
 save_freq = 10          # Save example images every X epochs
 output_freq = 1         # Output a status update every X epochs
 
+gan = None
+load = load_model()
+if load is not None:
+        gan, model.generator.model, model.discriminator.model, model.discriminator.classifier = load
+        print("Load successful.")
+else:
+        gan = tf.keras.Model(inputs=model.generator.inputs + model.generator.ignored_inputs, outputs=model.discriminator.model(model.generator.model.output))
+        print("Load failed.")
 print("Begun training.")
 plot.ion()
 while model.discriminator.resolution <= max_resolution:
@@ -67,7 +114,6 @@ while model.discriminator.resolution <= max_resolution:
         while g_loss > loss_threshold or iterations < min_iterations:
                 resolution = model.discriminator.resolution
                 # 1. Train Discriminator
-#                if d_acc < accuracy_max:  # Temporarily stop training the discriminator if it's doing too well
                 model.discriminator.model.trainable = True
                 model.discriminator.model.compile(loss=model.loss, optimizer="adam", metrics=["binary_accuracy"])
                 for i in range(disc_iter):
@@ -83,7 +129,6 @@ while model.discriminator.resolution <= max_resolution:
                 plot_confidence()
                 # 2. Train Generator
                 labels = np.ones(batch_size)    # All fake images are labeled as 1, indicating they're real
-                gan = tf.keras.Model(inputs=model.generator.inputs + model.generator.ignored_inputs, outputs=model.discriminator.model(model.generator.model.output))
                 gan.layers[-1].trainable = False
                 gan.compile(loss=model.loss, optimizer="adam", metrics=["binary_accuracy"])
                 for i in range(gen_iter):
