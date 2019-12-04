@@ -12,6 +12,7 @@ num_channels = 3                # Number of internal channels to use, to hopeful
 use_smaller_noise = False       # Use noise textures one resolution smaller than the current resolution, to significantly decrease the size of the network
 use_mapping = False             # Use a mapping network to generate a latent code from the input code
 use_second_block = False        # Use two Convolution - Noise - AdaIN blocks for each resolution
+loss = "binary_crossentropy"    # Loss function to use 
 
 class NoiseLayer(tf.keras.layers.Layer):
         """Adds random zero-centered Gaussian noise to the input, with a learned
@@ -21,7 +22,7 @@ class NoiseLayer(tf.keras.layers.Layer):
                 super(NoiseLayer, self).__init__(**kwargs)
         def build(self, input_shape):
                 self.scale = self.add_weight(shape=input_shape[1:],
-                                             initializer=tf.keras.initializers.zeros,
+                                             initializer=tf.keras.initializers.Zeros,
                                              name="scaling_factor")
         def compute_output_shape(self, input_shape):
                 return input_shape
@@ -37,7 +38,7 @@ class ConstantLayer(tf.keras.layers.Layer):
                 super(ConstantLayer, self).__init__(**kwargs)
         def build(self, input_shape):
                 self.constant = self.add_weight(shape=input_shape[1:],
-                                                initializer=tf.keras.initializers.ones,
+                                                initializer=tf.keras.initializers.Ones,
                                                 name="constant")
                 super(ConstantLayer, self).build(input_shape)
         def compute_output_shape(self, input_shape):
@@ -62,20 +63,26 @@ class AdaptiveInstanceNormalizationLayer(tf.keras.layers.Layer):
                 self.mean = self.add_weight(shape=latent_shape[1:] + (layer_shape[3],),
                                             initializer=tf.keras.initializers.RandomNormal,
                                             name="mean")
+                self.mean_bias = self.add_weight(shape=(layer_shape[3],),
+                                                 initializer=tf.keras.initializers.Zeros,
+                                                 name="mean_bias")
                 self.stddev = self.add_weight(shape=latent_shape[1:] + (layer_shape[3],),
                                               initializer=tf.keras.initializers.RandomNormal,
                                               name="stddev")
+                self.stddev_bias = self.add_weight(shape=(layer_shape[3],),
+                                                   initializer=tf.keras.initializers.Ones,
+                                                   name="stddev_bias")
         def compute_output_shape(self, input_shape):
                 assert len(input_shape) == 2
                 return input_shape[1]
         def call(self, inputs):
                 assert len(inputs) == 2
-                latent_code, layer = inputs                                                     # Bx64, BxNxNxC
-                old_mean = K.mean(layer, axis=[1,2], keepdims=True)                             # Bx1x1xC means
-                old_stddev = K.std(layer, axis=[1,2], keepdims=True)                            # Bx1x1xC stddevs
-                normalized = (layer - old_mean) / (old_stddev + K.epsilon())                    # BxNxNxC z-scores
-                new_mean = K.expand_dims(K.expand_dims(K.dot(latent_code, self.mean), axis=1), axis=1)          # should be Bx1x1xC means, but dot produces BxC
-                new_stddev = K.expand_dims(K.expand_dims(K.dot(latent_code, self.stddev), axis=1), axis=1)      # should be Bx1x1xC stddevs, but dot produce BxC
+                latent_code, layer = inputs                                     # Bx64, BxNxNxC
+                old_mean = K.mean(layer, axis=[1,2], keepdims=True)             # Bx1x1xC means
+                old_stddev = K.std(layer, axis=[1,2], keepdims=True)            # Bx1x1xC stddevs
+                normalized = (layer - old_mean) / (old_stddev + K.epsilon())    # BxNxNxC z-scores
+                new_mean = K.expand_dims(K.expand_dims(K.dot(latent_code, self.mean) + self.mean_bias, axis=1), axis=1)         # should be Bx1x1xC means, but dot produces BxC
+                new_stddev = K.expand_dims(K.expand_dims(K.dot(latent_code, self.stddev) + self.stddev_bias, axis=1), axis=1)   # should be Bx1x1xC stddevs, but dot produce BxC
                 return new_stddev * normalized + new_mean
 
 class Generator:
@@ -88,7 +95,6 @@ class Generator:
                 self.inputs = inputs
                 self.ignored_inputs = ignored_inputs
                 self.model = tf.keras.Model(inputs=self.inputs + self.ignored_inputs, outputs=self.toRGB(self.synthesis))
-                self.loss = None
         def generate(self, noise, crossover_noise=None, crossover_layer=0):
                 # Inputs:
                 #  - one input code for each resolution (Each layer could use a separate one, but it is currently only set up to use 2)
@@ -103,24 +109,13 @@ class Generator:
                         return self.model([noise for i in self.inputs[:crossover_layer]] +
                                           [crossover_noise for i in self.inputs[crossover_layer:]] +
                                           [np.zeros((noise.shape[0],) + i.shape[1:]) for i in self.ignored_inputs])
-        def train_on_batch(self, x, y, discriminator, crossover_x=None, crossover_layer=0):
-                discriminator.model.trainable = False
-                gan = tf.keras.Model(inputs=self.inputs + self.ignored_inputs, outputs=discriminator.model(self.model.output))
-                gan.compile(loss="binary_crossentropy", optimizer="adam")
+        def make_input_list(self, x, crossover_x=None, crossover_layer=0):
+                # Creates a list of inputs in the correct format
                 if crossover_x is None:
-                        self.loss = gan.train_on_batch([x for i in self.inputs] +
-                                                       [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs], y)
+                        return [x for i in self.inputs] + [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs]
                 else:
                         assert x.shape == crossover_x.shape
-                        self.loss = gan.train_on_batch([x for i in self.inputs[:crossover_layer]] +
-                                                       [crossover_x for i in self.inputs[crossover_layer:]] +
-                                                       [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs], y)
-                discriminator.model.trainable = True
-                return self.loss
-        def get_loss(self):
-                if self.loss:
-                        return self.loss
-                return float("inf")
+                        return [x for i in self.inputs[:crossover_layer]] + [crossover_x for i in self.inputs[crossover_layer:]] + [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs]
         # Ideally, once training is finished, mapping network can be removed entirely
         # Input would be the latent code directly, for better feature separation, which means the inputs to the AdaIN layers will have to change
 
@@ -130,9 +125,11 @@ class Discriminator:
         def __init__(self, classifier):
                 self.classifier = classifier
                 self.resolution = starting_resolution
-                self.fromRGB = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=1)
+                self.fromRGB = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=1,
+                                                      kernel_initializer=tf.keras.initializers.RandomNormal,
+                                                      bias_initializer=tf.keras.initializers.Zeros)
                 self.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(self.resolution, self.resolution, 3)), self.fromRGB, self.classifier])
-                self.model.compile(loss="binary_crossentropy", optimizer="adam", metrics=["binary_accuracy"])
+                self.model.compile(loss=loss, optimizer="adam", metrics=["binary_accuracy"])
         def classify(self, image):
                 return self.classifier.predict(self.fromRGB(image))
 
@@ -156,14 +153,19 @@ latent_input = tf.keras.layers.Input(shape=(input_size,))
 ignore_input = tf.keras.layers.Input(shape=initializer_shape)
 synthesis = ConstantLayer()(ignore_input)
 synthesis = tf.keras.layers.Flatten()(synthesis)
-synthesis = tf.keras.layers.Dense(starting_resolution * starting_resolution * num_channels)(synthesis)
+synthesis = tf.keras.layers.Dense(starting_resolution * starting_resolution * num_channels,
+                                  kernel_initializer=tf.keras.initializers.RandomNormal,
+                                  bias_initializer=tf.keras.initializers.Zeros)(synthesis)
 synthesis = tf.keras.layers.Reshape((starting_resolution, starting_resolution, num_channels))(synthesis)
 synthesis = NoiseLayer()(synthesis)
 if use_mapping:
         synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
 else:
         synthesis = AdaptiveInstanceNormalizationLayer()([latent_input, synthesis])
-synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same")(synthesis)
+synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
+                                   kernel_initializer=tf.keras.initializers.RandomNormal,
+                                   bias_initializer=tf.keras.initializers.Zeros)(synthesis)
+synthesis = tf.keras.layers.LeakyReLU(alpha=0.2)(synthesis)
 synthesis = NoiseLayer()(synthesis)
 if use_mapping:
         synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
@@ -175,17 +177,27 @@ generator = Generator(mapping, synthesis, [latent_input,], [ignore_input,])
 # Discriminator Network
 classifier = tf.keras.Sequential()
 classifier.add(tf.keras.layers.Input(shape=(starting_resolution, starting_resolution, num_channels)))
-classifier.add(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same"))
+classifier.add(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
+                                      kernel_initializer=tf.keras.initializers.RandomNormal,
+                                      bias_initializer=tf.keras.initializers.Zeros))
 classifier.add(tf.keras.layers.Flatten())
-classifier.add(tf.keras.layers.Dense(8, activation="relu"))
-classifier.add(tf.keras.layers.Dense(1, activation="sigmoid"))
-classifier.compile(loss="binary_crossentropy", optimizer="adam", metrics=["binary_accuracy"])
+classifier.add(tf.keras.layers.Dense(8, activation="linear",
+                                     kernel_initializer=tf.keras.initializers.RandomNormal,
+                                     bias_initializer=tf.keras.initializers.Zeros))
+classifier.add(tf.keras.layers.LeakyReLU(alpha=0.2))
+classifier.add(tf.keras.layers.Dense(1, activation="sigmoid",
+                                     kernel_initializer=tf.keras.initializers.RandomNormal,
+                                     bias_initializer=tf.keras.initializers.Zeros))
+classifier.compile(loss=loss, optimizer="adam", metrics=["binary_accuracy"])
 
 discriminator = Discriminator(classifier)
 
 def add_resolution(generator, discriminaor):
         generator.synthesis = tf.keras.layers.UpSampling2D()(generator.synthesis)
-        generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same")(generator.synthesis)
+        generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
+                                                     kernel_initializer=tf.keras.initializers.RandomNormal,
+                                                     bias_initializer=tf.keras.initializers.Zeros)(generator.synthesis)
+        generator.synthesis = tf.keras.layers.LeakyReLU(alpha=0.2)(generator.synthesis)
         # Noise layers after the first are 1 resolution smaller than the layer they are being applied to, to dastically reduce the size of the network without sacrificing much quality
         shape = (discriminator.resolution, discriminator.resolution, num_channels)
         generator.inputs.append(tf.keras.layers.Input(shape=(input_size,)))     # Add a new input for each resolution, used for crossover training
@@ -201,7 +213,10 @@ def add_resolution(generator, discriminaor):
         else:
                 generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
         if use_second_block:
-                generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same")(generator.synthesis)
+                generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
+                                                             kernel_initializer=tf.keras.initializers.RandomNormal,
+                                                             bias_initializer=tf.keras.initializers.Zeros)(generator.synthesis)
+                generator.synthesis = tf.keras.layers.LeakyReLU(alpha=0.2)(generator.synthesis)
                 if use_smaller_noise:
                         noise = NoiseLayer()(generator.ignored_inputs[-1])      # Reuse the same input layer, since it's being ignored anyway
                         noise = tf.keras.layers.UpSampling2D()(noise)
@@ -213,14 +228,17 @@ def add_resolution(generator, discriminaor):
                 else:
                         generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
         generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.toRGB(generator.synthesis))
-        generator.model.compile(loss="binary_crossentropy", optimizer="adam")
+        generator.model.compile(loss=loss, optimizer="adam")
         # To-do: smooth fade-in of the new layer as decribed in [5]
         discriminator.resolution *= 2
         classifier = tf.keras.Sequential()
         classifier.add(tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, num_channels)))
-        classifier.add(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same"))
+        classifier.add(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
+                                              kernel_initializer=tf.keras.initializers.RandomNormal,
+                                              bias_initializer=tf.keras.initializers.Zeros))
+        classifier.add(tf.keras.layers.LeakyReLU(alpha=0.2))
         classifier.add(tf.keras.layers.AveragePooling2D())
         classifier.add(discriminator.classifier)
         discriminator.classifier = classifier
         discriminator.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, 3)), discriminator.fromRGB, discriminator.classifier])
-        discriminator.model.compile(loss="binary_crossentropy", optimizer="adam", metrics=["binary_accuracy"])
+        discriminator.model.compile(loss=loss, optimizer="adam", metrics=["binary_accuracy"])
