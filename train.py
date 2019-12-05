@@ -20,10 +20,11 @@ def shuffle(images, labels):
 
 def plot_losses():
         plot.clf()
-        plot.plot(gen_losses, label="Gen Loss")
-        plot.plot(dis_losses, label="Disc Loss")
-        plot.plot(dis_accuracy, label="Disc Acc")
-        plot.plot(gen_accuracy, label="Gen Acc")
+        # Plot at most the last ten epochs, just for clarity
+        plot.plot(gen_losses[-10*(disc_iter+gen_iter):], label="Gen Loss")
+        plot.plot(dis_losses[-10*(disc_iter+gen_iter):], label="Disc Loss")
+        plot.plot(dis_accuracy[-10*(disc_iter+gen_iter):], label="Disc Acc")
+        plot.plot(gen_accuracy[-10*(disc_iter+gen_iter):], label="Gen Acc")
         plot.legend()
         plot.draw()
         plot.pause(0.001)
@@ -48,10 +49,13 @@ def save_model():
                 out.write(model.discriminator.classifier.to_json())
         with open("models\gen_model.json", "w") as out:
                 out.write(model.generator.model.to_json())
+        with open("models\gen_map.json", "w") as out:
+                out.write(model.generator.mapping.to_json())
         gan.save_weights("models\gan_weights")
         model.discriminator.model.save_weights("models\disc_model_weights")
         model.discriminator.classifier.save_weights("models\disc_class_weights")
         model.generator.model.save_weights("models\gen_model_weights")
+        model.generator.mapping.save_weights("models\gen_map_weights")
         # Also save some of the training parameters
         training_data = {"epoch":epoch, "iteration":iterations, "gl":g_loss, "ga":g_acc, "dl":d_loss, "da":d_acc,
                          "history":{"gl":gen_losses, "ga":gen_accuracy, "dl":dis_losses, "da":dis_accuracy},
@@ -61,11 +65,15 @@ def save_model():
 
 def load_model():
         if os.path.exists("models") and os.path.isdir("models"):
+                gen_map = None
                 gen_model = None
                 disc_class = None
                 disc_model = None
                 gan = None
                 custom_layers = {"ConstantLayer":model.ConstantLayer, "NoiseLayer":model.NoiseLayer, "AdaptiveInstanceNormalizationLayer":model.AdaptiveInstanceNormalizationLayer}
+                with open("models\gen_map.json", "r") as In:
+                        gen_map = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
+                        gen_map.load_weights("models\gen_map_weights")
                 with open("models\gen_model.json", "r") as In:
                         gen_model = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
                         gen_model.load_weights("models\gen_model_weights")
@@ -98,7 +106,8 @@ def load_model():
                 model.generator.toRGB = gen_model.layers[-1]
                 model.generator.synthesis = gen_model.layers[-2].output
                 model.discriminator.fromRGB = disc_model.layers[0]
-                return gan, gen_model, disc_model, disc_class
+                # What needs to happen here to get the mapping network connected right?
+                return gan, gen_model, gen_map, disc_model, disc_class
         return None
 
 # Training parameters
@@ -118,9 +127,11 @@ loss_threshold = 0.01   # When the network reaches this loss, add a new resoluti
 max_resolution = 128    # Highest resolution to train to
 batch_size = 50         # Number of images to train on at a time
 real_percentage = 0.7   # Percentage of real images to train the discriminator with
-min_iterations = 75     # Train for at least this many iterations before adding another resolution
-disc_iter = 200         # Train the discriminator this many times per epoch
-gen_iter = 35           # Train the generator this many times per epoch
+min_iterations = 100    # Train for at least this many iterations before adding another resolution
+disc_iter = 250         # Train the discriminator this many times per epoch
+gen_iter = 50           # Train the generator this many times per epoch
+learning_rate = 0.001   # Initial learning rate, decayed with each resolution added. 0.001 = default learning rate for Adam
+learning_decay = 0.8    # Factor by which to decrease the learning rate each time a new resolution is added
 crossover_freq = 5      # 1 in X epochs will train using crossover
 save_freq = 1           # Save example images every X epochs
 output_freq = 1         # Output a status update every X epochs
@@ -128,23 +139,23 @@ output_freq = 1         # Output a status update every X epochs
 gan = None
 load = load_model()
 if load is not None:
-        gan, model.generator.model, model.discriminator.model, model.discriminator.classifier = load
+        gan, model.generator.model, model.generator.mapping, model.discriminator.model, model.discriminator.classifier = load
         print("Load successful.")
 else:
         gan = tf.keras.Model(inputs=model.generator.inputs + model.generator.ignored_inputs, outputs=model.discriminator.model(model.generator.model.output))
         dataset.clean(model.discriminator.resolution)
         print("Load failed.")
 
-#model.generator.toRGB.activation = tf.keras.activations.tanh
-
 print("Begun training.")
 plot.ion()
 while model.discriminator.resolution <= max_resolution:
+        disc_iter = 50 * int(np.log2(model.discriminator.resolution)) + 50      # Discriminator needs more training as the resolution increases; this just seems about right (8x: 250, 16x: 350, 32x: 450, ...)
+        gen_iter = 5 * int(np.log2(model.discriminator.resolution)) + 20        # Generator also needs a little bit more at higher resolutions, but not too much more (8x: 35, 16x: 40, 32x: 45, ...)
         while g_loss > loss_threshold or iterations < min_iterations:
                 resolution = model.discriminator.resolution
                 # 1. Train Discriminator
                 model.discriminator.model.trainable = True
-                model.discriminator.model.compile(loss=model.loss, optimizer="adam", metrics=["binary_accuracy"])
+                model.discriminator.model.compile(loss=model.loss, optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate), metrics=["binary_accuracy"])
                 d_iterations = 0
                 for i in range(disc_iter):
                         num_reals, reals = dataset.get_n_images(resolution, int(batch_size * real_percentage))
@@ -160,7 +171,7 @@ while model.discriminator.resolution <= max_resolution:
                 # 2. Train Generator
                 labels = np.ones(batch_size)    # All fake images are labeled as 1, indicating they're real
                 gan.layers[-1].trainable = False
-                gan.compile(loss=model.loss, optimizer="adam", metrics=["binary_accuracy"])
+                gan.compile(loss=model.loss, optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate), metrics=["binary_accuracy"])
                 g_iterations = 0
                 for i in range(gen_iter):
                         if model.discriminator.resolution > model.starting_resolution and epoch % crossover_freq == 0:
@@ -192,10 +203,15 @@ while model.discriminator.resolution <= max_resolution:
                 dataset.save_image("final", "BB", model.generator.generate(final2).numpy()[0])
                 dataset.save_image("final", "AB", model.generator.generate(final1, final2, 3).numpy()[0])
                 dataset.save_image("final", "BA", model.generator.generate(final2, final1, 3).numpy()[0])
+                for i in range(9):
+                        s = i / 4 - 1
+                        dataset.save_image("final", "A." + str(s), model.generator.generate(s * final1).numpy()[0])
+                        dataset.save_image("final", "B." + str(s), model.generator.generate(s * final2).numpy()[0])
                 break
         else:
                 print("Adding resolution: ", model.discriminator.resolution * 2, "x", model.discriminator.resolution * 2, sep="")
                 model.add_resolution(model.generator, model.discriminator)
                 gan = tf.keras.Model(inputs=model.generator.inputs + model.generator.ignored_inputs, outputs=model.discriminator.model(model.generator.model.output))
+                learning_rate *= learning_decay
                 iterations = 0
 print("Done training.")
