@@ -31,7 +31,7 @@ def plot_losses():
 
 def plot_confidence():
         plot.clf()
-        real_conf = [i[0] for i in model.discriminator.classify(dataset.get_n_images(model.discriminator.resolution, 100)[1])]
+        real_conf = [i[0] for i in model.discriminator.classify(tf.convert_to_tensor(dataset.get_n_images(model.discriminator.resolution, 100)[1]))]
         fake_conf = [i[0] for i in model.discriminator.classify(model.generator.generate(get_random_seeds(100)))]
         plot.hist([real_conf, fake_conf], label=["Real", "Fake"])
         plot.legend()
@@ -45,15 +45,12 @@ def save_model():
                 out.write(gan.to_json())
         with open("models\disc_model.json", "w") as out:
                 out.write(model.discriminator.model.to_json())
-        with open("models\disc_class.json", "w") as out:
-                out.write(model.discriminator.classifier.to_json())
         with open("models\gen_model.json", "w") as out:
                 out.write(model.generator.model.to_json())
         with open("models\gen_map.json", "w") as out:
                 out.write(model.generator.mapping.to_json())
         gan.save_weights("models\gan_weights")
         model.discriminator.model.save_weights("models\disc_model_weights")
-        model.discriminator.classifier.save_weights("models\disc_class_weights")
         model.generator.model.save_weights("models\gen_model_weights")
         model.generator.mapping.save_weights("models\gen_map_weights")
         # Also save some of the training parameters
@@ -67,7 +64,6 @@ def load_model():
         if os.path.exists("models") and os.path.isdir("models"):
                 gen_map = None
                 gen_model = None
-                disc_class = None
                 disc_model = None
                 gan = None
                 custom_layers = {"ConstantLayer":model.ConstantLayer, "NoiseLayer":model.NoiseLayer, "AdaptiveInstanceNormalizationLayer":model.AdaptiveInstanceNormalizationLayer}
@@ -77,13 +73,9 @@ def load_model():
                 with open("models\gen_model.json", "r") as In:
                         gen_model = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
                         gen_model.load_weights("models\gen_model_weights")
-                with open("models\disc_class.json", "r") as In:
-                        disc_class = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
-                        disc_class.load_weights("models\disc_class_weights")
                 with open("models\disc_model.json", "r") as In:
                         disc_model = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
                         disc_model.load_weights("models\disc_model_weights")
-                        disc_class = disc_model.layers[-1]
                 with open("models\gan.json", "r") as In:
                         gan = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
                         gan.load_weights("models\gan_weights")
@@ -106,11 +98,10 @@ def load_model():
                 model.generator.ignored_inputs = [i for i in gen_model.input if i.shape.as_list() != [None, model.latent_size]]
                 model.generator.toRGB = gen_model.layers[-1]
                 model.generator.synthesis = gen_model.layers[-2].output
-                model.discriminator.fromRGB = disc_model.layers[0]
-                model.discriminator.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(model.discriminator.resolution, model.discriminator.resolution, 3)), model.discriminator.RGB, model.discriminator.classifier])
-                model.discriminator.model.compile(loss=model.loss, optimizer="adam", metrics=["binary_accuracy"])
+                model.discriminator.fromRGB = disc_model.layers[1]      # [ input, toRGB, classifier ... ]
+                model.discriminator.classifier = disc_model.layers[2:]
                 # What needs to happen here to get the mapping network connected right?
-                return gan, gen_model, gen_map, disc_model, disc_class
+                return gan, gen_model, gen_map, disc_model
         return None
 
 # Training parameters
@@ -142,7 +133,7 @@ output_freq = 1         # Output a status update every X epochs
 gan = None
 load = load_model()
 if load is not None:
-        gan, model.generator.model, model.generator.mapping, model.discriminator.model, model.discriminator.classifier = load
+        gan, model.generator.model, model.generator.mapping, model.discriminator.model = load
         print("Load successful.")
 else:
         gan = tf.keras.Model(inputs=model.generator.inputs + model.generator.ignored_inputs, outputs=model.discriminator.model(model.generator.model.output))

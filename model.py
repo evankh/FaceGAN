@@ -145,10 +145,10 @@ class Discriminator:
                 self.fromRGB = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=1,
                                                       kernel_initializer=tf.keras.initializers.RandomNormal(),
                                                       bias_initializer=tf.keras.initializers.Zeros())
-                self.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(self.resolution, self.resolution, 3)), self.fromRGB, self.classifier])
+                self.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(self.resolution, self.resolution, 3)), self.fromRGB] + self.classifier)
                 self.model.compile(loss=loss, optimizer="adam", metrics=["binary_accuracy"])
         def classify(self, image):
-                return self.classifier.predict(self.fromRGB(image))
+                return self.model.predict(image)
 
 # Mapping Network
 # Takes in an input vector and outputs an intermediate latent code, intended to disentagle the input features
@@ -194,20 +194,18 @@ else:
 generator = Generator(mapping, synthesis, [latent_input,], [ignore_input,])
 
 # Discriminator Network
-classifier = tf.keras.Sequential()
-classifier.add(tf.keras.layers.Input(shape=(starting_resolution, starting_resolution, num_channels)))
-classifier.add(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
-                                      kernel_initializer=tf.keras.initializers.RandomNormal(),
-                                      bias_initializer=tf.keras.initializers.Zeros()))
-classifier.add(tf.keras.layers.Flatten())
-classifier.add(tf.keras.layers.Dense(8, activation="linear",
-                                     kernel_initializer=tf.keras.initializers.RandomNormal(),
-                                     bias_initializer=tf.keras.initializers.Zeros()))
-classifier.add(tf.keras.layers.LeakyReLU(alpha=0.2))
-classifier.add(tf.keras.layers.Dense(1, activation="sigmoid",
-                                     kernel_initializer=tf.keras.initializers.RandomNormal(),
-                                     bias_initializer=tf.keras.initializers.Zeros()))
-classifier.compile(loss=loss, optimizer="adam", metrics=["binary_accuracy"])
+classifier = []
+classifier.append(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
+                                         kernel_initializer=tf.keras.initializers.RandomNormal(),
+                                         bias_initializer=tf.keras.initializers.Zeros()))
+classifier.append(tf.keras.layers.Flatten())
+classifier.append(tf.keras.layers.Dense(8, activation="linear",
+                                        kernel_initializer=tf.keras.initializers.RandomNormal(),
+                                        bias_initializer=tf.keras.initializers.Zeros()))
+classifier.append(tf.keras.layers.LeakyReLU(alpha=0.2))
+classifier.append(tf.keras.layers.Dense(1, activation="sigmoid",
+                                        kernel_initializer=tf.keras.initializers.RandomNormal(),
+                                        bias_initializer=tf.keras.initializers.Zeros()))
 
 discriminator = Discriminator(classifier)
 
@@ -250,14 +248,12 @@ def add_resolution(generator, discriminaor):
         generator.model.compile(loss=loss, optimizer="adam")
         # To-do: smooth fade-in of the new layer as decribed in [5]
         discriminator.resolution *= 2
-        classifier = tf.keras.Sequential()
-        classifier.add(tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, num_channels)))
-        classifier.add(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
-                                              kernel_initializer=tf.keras.initializers.RandomNormal(),
-                                              bias_initializer=tf.keras.initializers.Zeros()))
-        classifier.add(tf.keras.layers.LeakyReLU(alpha=0.2))
-        classifier.add(tf.keras.layers.AveragePooling2D())
-        classifier.add(discriminator.classifier)
-        discriminator.classifier = classifier
-        discriminator.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, 3)), discriminator.fromRGB, discriminator.classifier])
+        classifier = []
+        classifier.append(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
+                                                 kernel_initializer=tf.keras.initializers.RandomNormal(),
+                                                 bias_initializer=tf.keras.initializers.Zeros()))
+        classifier.append(tf.keras.layers.LeakyReLU(alpha=0.2))
+        classifier.append(tf.keras.layers.AveragePooling2D())
+        discriminator.classifier = classifier + discriminator.classifier
+        discriminator.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, 3)), discriminator.fromRGB] + discriminator.classifier)
         discriminator.model.compile(loss=loss, optimizer="adam", metrics=["binary_accuracy"])
