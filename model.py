@@ -10,8 +10,9 @@ initializer_shape = (4, 4, latent_size) # Shape of constant initialization layer
 starting_resolution = 8         # Initial resolution of images
 num_channels = 3                # Number of internal channels to use, to hopefully have more information to work with than just RGB
 use_smaller_noise = False       # Use noise textures one resolution smaller than the current resolution, to significantly decrease the size of the network
-use_mapping = True              # Use a mapping network to generate a latent code from the input code
+use_mapping = False             # Use a mapping network to generate a latent code from the input code, to increase independence of input dimensions
 mapping_depth = 4               # Number of layers in the mapping network
+mapping_rate = 0.0005           # Learning rate for the mapping network (Adam default = 0.001)
 use_second_block = True         # Use two Convolution - Noise - AdaIN blocks for each resolution
 loss = "binary_crossentropy"    # Loss function to use 
 
@@ -154,12 +155,16 @@ class Discriminator:
 mapping = tf.keras.Sequential()
 mapping.add(tf.keras.layers.Input(shape=(input_size,)))
 for i in range(mapping_depth // 2):
-        mapping.add(tf.keras.layers.Dense(input_size))
+        mapping.add(tf.keras.layers.Dense(input_size,
+                                          kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1.0),
+                                          bias_initializer=tf.keras.initializers.Zeros()))
         mapping.add(tf.keras.layers.LeakyReLU(alpha=0.2))
 for i in range(mapping_depth - mapping_depth // 2):
-        mapping.add(tf.keras.layers.Dense(latent_size))
+        mapping.add(tf.keras.layers.Dense(latent_size,
+                                          kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1.0),
+                                          bias_initializer=tf.keras.initializers.Zeros()))
         mapping.add(tf.keras.layers.LeakyReLU(alpha=0.2))
-mapping.compile(loss="mean_squared_error", optimizer="adam")
+mapping.compile(loss="mean_squared_error", optimizer=tf.keras.optimizers.Adam(learning_rate=mapping_rate))
 
 # Synthesis Network
 # Has to be written using the Functional API so that the AdaIN layers can take multiple inputs.

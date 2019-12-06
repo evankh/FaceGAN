@@ -83,6 +83,7 @@ def load_model():
                 with open("models\disc_model.json", "r") as In:
                         disc_model = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
                         disc_model.load_weights("models\disc_model_weights")
+                        disc_class = disc_model.layers[-1]
                 with open("models\gan.json", "r") as In:
                         gan = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
                         gan.load_weights("models\gan_weights")
@@ -106,6 +107,8 @@ def load_model():
                 model.generator.toRGB = gen_model.layers[-1]
                 model.generator.synthesis = gen_model.layers[-2].output
                 model.discriminator.fromRGB = disc_model.layers[0]
+                model.discriminator.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(model.discriminator.resolution, model.discriminator.resolution, 3)), model.discriminator.RGB, model.discriminator.classifier])
+                model.discriminator.model.compile(loss=model.loss, optimizer="adam", metrics=["binary_accuracy"])
                 # What needs to happen here to get the mapping network connected right?
                 return gan, gen_model, gen_map, disc_model, disc_class
         return None
@@ -149,8 +152,8 @@ else:
 print("Begun training.")
 plot.ion()
 while model.discriminator.resolution <= max_resolution:
-        disc_iter = 50 * int(np.log2(model.discriminator.resolution)) + 50      # Discriminator needs more training as the resolution increases; this just seems about right (8x: 250, 16x: 350, 32x: 450, ...)
-        gen_iter = 5 * int(np.log2(model.discriminator.resolution)) + 20        # Generator also needs a little bit more at higher resolutions, but not too much more (8x: 35, 16x: 40, 32x: 45, ...)
+        disc_iter = 150 * int(np.log2(model.discriminator.resolution)) - 200     # Discriminator needs more training as the resolution increases; this just seems about right (8x: 250, 16x: 350, 32x: 450, ...)
+        gen_iter = 10 * int(np.log2(model.discriminator.resolution)) + 20        # Generator also needs a little bit more at higher resolutions, but not too much more (8x: 35, 16x: 40, 32x: 45, ...)
         while g_loss > loss_threshold or iterations < min_iterations:
                 resolution = model.discriminator.resolution
                 # 1. Train Discriminator
@@ -199,14 +202,17 @@ while model.discriminator.resolution <= max_resolution:
                 dataset.clean("final")
                 final1 = get_random_seeds(1)
                 final2 = get_random_seeds(1)
-                dataset.save_image("final", "AA", model.generator.generate(final1).numpy()[0])
-                dataset.save_image("final", "BB", model.generator.generate(final2).numpy()[0])
-                dataset.save_image("final", "AB", model.generator.generate(final1, final2, 3).numpy()[0])
-                dataset.save_image("final", "BA", model.generator.generate(final2, final1, 3).numpy()[0])
+                dataset.save_image("final", "crossover.AA", model.generator.generate(final1).numpy()[0])
+                dataset.save_image("final", "crossover.BB", model.generator.generate(final2).numpy()[0])
+                dataset.save_image("final", "crossover.AB", model.generator.generate(final1, final2, 3).numpy()[0])
+                dataset.save_image("final", "crossover.BA", model.generator.generate(final2, final1, 3).numpy()[0])
                 for i in range(9):
                         s = i / 4 - 1
-                        dataset.save_image("final", "A." + str(s), model.generator.generate(s * final1).numpy()[0])
-                        dataset.save_image("final", "B." + str(s), model.generator.generate(s * final2).numpy()[0])
+                        dataset.save_image("final", "A.fade" + str(i), model.generator.generate(s * final1).numpy()[0])
+                        dataset.save_image("final", "B.fade" + str(i), model.generator.generate(s * final2).numpy()[0])
+                for i in range(10):
+                        dataset.save_image("final", "A.noise" + str(i), model.generator.generate(final1).numpy()[0])
+                        dataset.save_image("final", "B.noise" + str(i), model.generator.generate(final2).numpy()[0])
                 break
         else:
                 print("Adding resolution: ", model.discriminator.resolution * 2, "x", model.discriminator.resolution * 2, sep="")
