@@ -99,6 +99,26 @@ class AdaptiveInstanceNormalizationLayer(tf.keras.layers.Layer):
                 base_config = super(AdaptiveInstanceNormalizationLayer, self).get_config()
                 return dict(list(base_config.items()) + list(config.items()))
 
+class MixLayer(tf.keras.layers.Layer):
+        """Mixes two layers according to an adjustable parameter alpha."""
+        def __init__(self, alpha=0.0, **kwargs):
+                super(MixLayer, self).__init__(**kwargs)
+                self.alpha = alpha
+        def compute_output_shape(self, input_shape):
+                assert len(input_shape) == 2
+                assert input_shape[0] == input_shape[1]
+                return input_shape[0]
+        def build(self, input_shape):
+                pass
+        def call(self, inputs):
+                assert len(inputs) == 2
+                a, b = inputs
+                return a * (1 - self.alpha) + b * self.alpha
+        def get_config(self):
+                config = {"alpha": self.alpha}
+                base_config = super(MixLayer, self).get_config()
+                return dict(list(base_config.items()) + list(config.items()))
+
 class Generator:
         """Keeps all necessary information for the generator in one place.
         """
@@ -112,6 +132,7 @@ class Generator:
                 self.inputs = inputs
                 self.ignored_inputs = ignored_inputs
                 self.model = tf.keras.Model(inputs=self.inputs + self.ignored_inputs, outputs=self.toRGB(self.synthesis))
+                self.mix = None
         def generate(self, noise, crossover_noise=None, crossover_layer=0):
                 # Inputs:
                 #  - one input code for each resolution (Each layer could use a separate one, but it is currently only set up to use 2)
@@ -133,6 +154,9 @@ class Generator:
                 else:
                         assert x.shape == crossover_x.shape
                         return [x for i in self.inputs[:crossover_layer]] + [crossover_x for i in self.inputs[crossover_layer:]] + [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs]
+        def set_alpha(alpha):
+                if self.mix is not None:
+                        self.mix.alpha = alpha
         # Ideally, once training is finished, mapping network can be removed entirely
         # Input would be the latent code directly, for better feature separation, which means the inputs to the AdaIN layers will have to change
 
@@ -147,8 +171,12 @@ class Discriminator:
                                                       bias_initializer=tf.keras.initializers.Zeros())
                 self.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(self.resolution, self.resolution, 3)), self.fromRGB] + self.classifier)
                 self.model.compile(loss=loss, optimizer="adam", metrics=["binary_accuracy"])
+                self.mix = None
         def classify(self, image):
                 return self.model.predict(image)
+        def set_alpha(alpha):
+                if self.mix is not None:
+                        self.mix.alpha = alpha
 
 # Mapping Network
 # Takes in an input vector and outputs an intermediate latent code, intended to disentagle the input features
@@ -209,16 +237,18 @@ classifier.append(tf.keras.layers.Dense(1, activation="sigmoid",
 
 discriminator = Discriminator(classifier)
 
-def add_resolution(generator, discriminaor):
+def add_resolution(generator, discriminator):
+        # Generator
         generator.synthesis = tf.keras.layers.UpSampling2D()(generator.synthesis)
+        old_layer = generaor.synthesis
         generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
                                                      kernel_initializer=tf.keras.initializers.RandomNormal(),
                                                      bias_initializer=tf.keras.initializers.Zeros())(generator.synthesis)
         generator.synthesis = tf.keras.layers.LeakyReLU(alpha=0.2)(generator.synthesis)
-        # Noise layers after the first are 1 resolution smaller than the layer they are being applied to, to dastically reduce the size of the network without sacrificing much quality
         shape = (discriminator.resolution, discriminator.resolution, num_channels)
         generator.inputs.append(tf.keras.layers.Input(shape=(input_size,)))     # Add a new input for each resolution, used for crossover training
         if use_smaller_noise:
+                # Noise layers after the first are 1 resolution smaller than the layer they are being applied to, to dastically reduce the size of the network without sacrificing much quality
                 generator.ignored_inputs.append(tf.keras.layers.Input(shape=shape))     # Input = all zeros
                 noise = NoiseLayer()(generator.ignored_inputs[-1])
                 noise = tf.keras.layers.UpSampling2D()(noise)
@@ -244,9 +274,16 @@ def add_resolution(generator, discriminaor):
                         generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
                 else:
                         generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
-        generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.toRGB(generator.synthesis))
+        # Merge here ( I think ) - Is doing toRGB(a) + toRGB(b) == toRGB(a + b) ??? I am assuming not, since it's nonlinear
+        # Assuming they're equivalent:
+#        generator.mix = MixLayer(0.0)([old_layer, generator.synthesis])
+#        generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.toRGB(generator.mix))
+        # Assuming they're not:
+        generator.mix = MixLayer(0.0)([generator.toRGB(old_layer), generator.toRGB(generator.synthesis)])
+        generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.mix)
+        # And since the mix layer is never technically added to the synthesis, it should just drop out once the next resolution is added, kinda like the toRGB layer!
         generator.model.compile(loss=loss, optimizer="adam")
-        # To-do: smooth fade-in of the new layer as decribed in [5]
+        # Discriminator
         discriminator.resolution *= 2
         classifier = []
         classifier.append(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",

@@ -127,6 +127,7 @@ gen_iter = 50           # Train the generator this many times per epoch
 learning_rate = 0.001   # Initial learning rate, decayed with each resolution added. 0.001 = default learning rate for Adam
 learning_decay = 0.8    # Factor by which to decrease the learning rate each time a new resolution is added
 crossover_freq = 5      # 1 in X epochs will train using crossover
+res_fade_in = 15        # Number of epochs over which to fade in a new resolution
 save_freq = 1           # Save example images every X epochs
 output_freq = 1         # Output a status update every X epochs
 
@@ -147,6 +148,10 @@ while model.discriminator.resolution <= max_resolution:
         gen_iter = 10 * int(np.log2(model.discriminator.resolution)) + 20        # Generator also needs a little bit more at higher resolutions, but not too much more (8x: 35, 16x: 40, 32x: 45, ...)
         while g_loss > loss_threshold or iterations < min_iterations:
                 resolution = model.discriminator.resolution
+                if resolution != model.sarting_resolution:
+                        alpha = np.clip(iterations / res_fade_in, 0.0, 1.0)
+                        model.generator.set_alpha(alpha)
+                        model.discriminator.set_alpha(alpha)
                 # 1. Train Discriminator
                 model.discriminator.model.trainable = True
                 model.discriminator.model.compile(loss=model.loss, optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate), metrics=["binary_accuracy"])
