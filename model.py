@@ -125,7 +125,7 @@ class Generator:
         def __init__(self, mapping, synthesis, inputs, ignored_inputs):
                 self.mapping = mapping
                 self.synthesis = synthesis
-                self.toRGB = tf.keras.layers.Conv2D(filters=3, kernel_size=1, padding="same",
+                self.toRGB = tf.keras.layers.Conv2D(filters=3, kernel_size=1, padding="same",# name="toRGB",
                                                     activation=tf.keras.activations.tanh,
                                                     kernel_initializer=tf.keras.initializers.RandomNormal(),
                                                     bias_initializer=tf.keras.initializers.Zeros())
@@ -154,7 +154,7 @@ class Generator:
                 else:
                         assert x.shape == crossover_x.shape
                         return [x for i in self.inputs[:crossover_layer]] + [crossover_x for i in self.inputs[crossover_layer:]] + [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs]
-        def set_alpha(alpha):
+        def set_alpha(self, alpha):
                 if self.mix is not None:
                         self.mix.alpha = alpha
         # Ideally, once training is finished, mapping network can be removed entirely
@@ -166,7 +166,7 @@ class Discriminator:
         def __init__(self, classifier):
                 self.classifier = classifier
                 self.resolution = starting_resolution
-                self.fromRGB = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=1,
+                self.fromRGB = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=1,# name="fromRGB",
                                                       kernel_initializer=tf.keras.initializers.RandomNormal(),
                                                       bias_initializer=tf.keras.initializers.Zeros())
                 self.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(self.resolution, self.resolution, 3)), self.fromRGB] + self.classifier)
@@ -174,7 +174,7 @@ class Discriminator:
                 self.mix = None
         def classify(self, image):
                 return self.model.predict(image)
-        def set_alpha(alpha):
+        def set_alpha(self, alpha):
                 if self.mix is not None:
                         self.mix.alpha = alpha
 
@@ -240,7 +240,7 @@ discriminator = Discriminator(classifier)
 def add_resolution(generator, discriminator):
         # Generator
         generator.synthesis = tf.keras.layers.UpSampling2D()(generator.synthesis)
-        old_layer = generaor.synthesis
+        old_layer = generator.synthesis
         generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
                                                      kernel_initializer=tf.keras.initializers.RandomNormal(),
                                                      bias_initializer=tf.keras.initializers.Zeros())(generator.synthesis)
@@ -279,8 +279,8 @@ def add_resolution(generator, discriminator):
 #        generator.mix = MixLayer(0.0)([old_layer, generator.synthesis])
 #        generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.toRGB(generator.mix))
         # Assuming they're not:
-        generator.mix = MixLayer(0.0)([generator.toRGB(old_layer), generator.toRGB(generator.synthesis)])
-        generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.mix)
+        generator.mix = MixLayer(0.0)
+        generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.mix([generator.toRGB(old_layer), generator.toRGB(generator.synthesis)]))
         # And since the mix layer is never technically added to the synthesis, it should just drop out once the next resolution is added, kinda like the toRGB layer!
         generator.model.compile(loss=loss, optimizer="adam")
         # Discriminator

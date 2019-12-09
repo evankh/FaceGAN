@@ -56,7 +56,7 @@ def save_model():
         # Also save some of the training parameters
         training_data = {"epoch":epoch, "iteration":iterations, "gl":g_loss, "ga":g_acc, "dl":d_loss, "da":d_acc,
                          "history":{"gl":gen_losses, "ga":gen_accuracy, "dl":dis_losses, "da":dis_accuracy},
-                         "test_seed":test_seed.tolist(), "resolution":model.discriminator.resolution}
+                         "test_seed":test_seed.tolist(), "resolution":model.discriminator.resolution, "learning_rate":learning_rate}
         with open("training.json", "w") as out:
                 json.dump(training_data, out)
 
@@ -66,7 +66,7 @@ def load_model():
                 gen_model = None
                 disc_model = None
                 gan = None
-                custom_layers = {"ConstantLayer":model.ConstantLayer, "NoiseLayer":model.NoiseLayer, "AdaptiveInstanceNormalizationLayer":model.AdaptiveInstanceNormalizationLayer}
+                custom_layers = {"ConstantLayer":model.ConstantLayer, "NoiseLayer":model.NoiseLayer, "AdaptiveInstanceNormalizationLayer":model.AdaptiveInstanceNormalizationLayer, "MixLayer":model.MixLayer}
                 with open("models\gen_map.json", "r") as In:
                         gen_map = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
                         gen_map.load_weights("models\gen_map_weights")
@@ -81,7 +81,7 @@ def load_model():
                         gan.load_weights("models\gan_weights")
                 with open("training.json", "r") as In:
                         training_data = json.load(In)
-                        global epoch, iterations, g_loss, g_acc, d_loss, d_acc, gen_losses, gen_accuracy, dis_losses, dis_accuracy, test_seed
+                        global epoch, iterations, g_loss, g_acc, d_loss, d_acc, gen_losses, gen_accuracy, dis_losses, dis_accuracy, test_seed, learning_rate
                         epoch = training_data["epoch"]
                         iterations = training_data["iteration"]
                         g_loss = training_data["gl"]
@@ -94,11 +94,25 @@ def load_model():
                         dis_accuracy = training_data["history"]["da"]
                         test_seed = np.array(training_data["test_seed"])
                         model.discriminator.resolution = training_data["resolution"]
+                        learning_rate = training_data["learning_rate"]
                 model.generator.inputs = [i for i in gen_model.input if i.shape.as_list() == [None, model.latent_size]]
                 model.generator.ignored_inputs = [i for i in gen_model.input if i.shape.as_list() != [None, model.latent_size]]
-                model.generator.toRGB = gen_model.layers[-1]
-                model.generator.synthesis = gen_model.layers[-2].output
-                model.discriminator.fromRGB = disc_model.layers[1]      # [ input, toRGB, classifier ... ]
+                if model.discriminator.resolution > model.starting_resolution:
+                        model.generator.mix = gen_model.layers[-1]
+                        model.generator.toRGB = gen_model.layers[-2]
+                        model.generator.synthesis = gen_model.layers[-3].output
+                        l = tf.keras.layers.UpSampling2D()
+                        l = tf.keras.layers.Conv2D(3,3)
+                        l = tf.keras.layers.LeakyReLU()
+                        l = tf.keras.layers.Input(shape=(1,))
+                        l = model.NoiseLayer()
+                        l = model.AdaptiveInstanceNormalizationLayer()
+                        l = tf.keras.layers.Conv2D(3,3)
+                        l = tf.keras.layers.LeakyReLU()
+                else:
+                        model.generator.toRGB = gen_model.layers[-1]
+                        model.generator.synthesis = gen_model.layers[-1].output
+                model.discriminator.fromRGB = disc_model.layers[1]      # [ input, fromRGB, classifier ... ]
                 model.discriminator.classifier = disc_model.layers[2:]
                 # What needs to happen here to get the mapping network connected right?
                 return gan, gen_model, gen_map, disc_model
@@ -145,10 +159,9 @@ print("Begun training.")
 plot.ion()
 while model.discriminator.resolution <= max_resolution:
         disc_iter = 150 * int(np.log2(model.discriminator.resolution)) - 200     # Discriminator needs more training as the resolution increases; this just seems about right (8x: 250, 16x: 350, 32x: 450, ...)
-        gen_iter = 10 * int(np.log2(model.discriminator.resolution)) + 20        # Generator also needs a little bit more at higher resolutions, but not too much more (8x: 35, 16x: 40, 32x: 45, ...)
         while g_loss > loss_threshold or iterations < min_iterations:
                 resolution = model.discriminator.resolution
-                if resolution != model.sarting_resolution:
+                if resolution != model.starting_resolution:
                         alpha = np.clip(iterations / res_fade_in, 0.0, 1.0)
                         model.generator.set_alpha(alpha)
                         model.discriminator.set_alpha(alpha)
