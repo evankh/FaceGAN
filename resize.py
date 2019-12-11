@@ -2,11 +2,11 @@ from PIL import Image
 import os
 
 base = "../img/"
-out_sizes = [4, 8, 16, 32, 64]
+out_sizes = [8, 16, 32, 64]
 in_size = 128
-num_sets = 5
+in_sets = [5, 6, 7, 8, 9, 10]
 
-for n in range(num_sets):
+for n in in_sets:
         in_folder = os.path.join(base, str(in_size), str(n * 1000).rjust(5, "0"))
         if os.path.exists(in_folder) and os.path.isdir(in_folder):
                 for size in out_sizes:
