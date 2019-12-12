@@ -8,11 +8,11 @@ import json
 import model
 import dataset
 
-def get_random_seeds(num_seeds, normalize=True):
+def get_random_seeds(num_seeds, normalize=False):
+        x = np.random.normal(0, 1, (num_seeds, model.input_size)).astype(np.float64)
         if normalize:
-                x = np.random.normal(0, 1, (num_seeds, model.input_size)).astype(np.float64)
                 return x / np.sqrt(np.sum(x*x, axis=1, keepdims=True))
-        return np.random.normal(0, 1, (num_seeds, model.input_size)).astype(np.float64)
+        return x
 
 def shuffle(images, labels):
         order = list(range(len(images)))
@@ -58,7 +58,6 @@ def save_model():
                 out.write(model.generator.model.to_json())
         with open("models\gen_map.json", "w") as out:
                 out.write(model.generator.mapping.to_json())
-        gan.save_weights("models\gan_weights")
         model.discriminator.model.save_weights("models\disc_model_weights")
         model.generator.model.save_weights("models\gen_model_weights")
         model.generator.mapping.save_weights("models\gen_map_weights")
@@ -83,7 +82,6 @@ def load_model():
                         gen_model.load_weights("models\gen_model_weights")
                 with open("models\disc_model.json", "r") as In:
                         disc_model = tf.keras.models.model_from_json(In.read(), custom_objects=custom_layers)
-                        disc_model.summary()
                         disc_model.load_weights("models\disc_model_weights")
                 with open("training.json", "r") as In:
                         training_data = json.load(In)
@@ -150,14 +148,14 @@ gen_iterations = []     # Number of iterations the generator has trained for
 disc_iterations = []    # Number of iterations the discriminator has trained for
 
 loss_threshold = 0.005  # When the total network reaches this loss, add a new resolution
-gen_threshold = 0.025   # Iterate the generator until it reaches this loss threshold
-disc_threshold = 0.075  # Iterate the discriminator until it reaches this loss threshold
+gen_threshold = 0.035   # Iterate the generator until it reaches this loss threshold
+disc_threshold = 0.15   # Iterate the discriminator until it reaches this loss threshold
 max_resolution = 128    # Highest resolution to train to
 batch_size = 80         # Number of images to train on at a time
 real_percentage = 0.7   # Percentage of real images to train the discriminator with
 min_iterations = 50     # Train for at least this many iterations before adding another resolution
-disc_iter = 10          # Train the discriminator this many times per epoch
-gen_iter = 15           # Train the generator this many times per epoch
+disc_iter = 150         # Train the discriminator at least this many times per epoch
+gen_iter = 20           # Train the generator at least this many times per epoch
 learning_rate = 0.001   # Initial learning rate, decayed with each resolution added. 0.001 = default learning rate for Adam
 learning_decay = 0.8    # Factor by which to decrease the learning rate each time a new resolution is added
 crossover_freq = 3      # 1 in X epochs will train using crossover
@@ -189,7 +187,7 @@ while model.discriminator.resolution <= max_resolution:
                 model.discriminator.model.trainable = True
                 model.discriminator.model.compile(loss=model.loss, optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate), metrics=["binary_accuracy"])
                 d_iterations = 0
-                while d_iterations < disc_iter or sum(dis_losses[-5:]) / 5 >= disc_threshold:    # Training time depends on the average of the last ten iterations, to make it less sensitive to getting one really good one
+                while d_iterations < disc_iter:    # Training time depends on the average of the last ten iterations, to make it less sensitive to getting one really good one
                         num_reals, reals = dataset.get_n_images(resolution, int(batch_size * real_percentage))
                         fakes = model.generator.generate(get_random_seeds(batch_size - num_reals))
                         labels = np.concatenate((np.ones((num_reals, 1)), np.zeros((batch_size - num_reals, 1))))       # Label real images as 1 and fakes as 0
@@ -206,7 +204,7 @@ while model.discriminator.resolution <= max_resolution:
                 gan.layers[-1].trainable = False
                 gan.compile(loss=model.loss, optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate), metrics=["binary_accuracy"])
                 g_iterations = 0
-                while g_iterations < gen_iter or sum(gen_losses[-10:]) / 10 >= gen_threshold:
+                while g_iterations < gen_iter:
                         if model.discriminator.resolution > model.starting_resolution and epoch % crossover_freq == 0:
                                 g_loss, g_acc = gan.train_on_batch(model.generator.make_input_list(get_random_seeds(batch_size), get_random_seeds(batch_size),
                                                                                                    random.randint(1, len(model.generator.inputs) - 1)),
@@ -223,7 +221,7 @@ while model.discriminator.resolution <= max_resolution:
                 disc_iterations.append(d_iterations)
                 if epoch % output_freq == 0:
                         print("Finished epoch", epoch, "iteration", iterations)
-                        print("  generator:", g_iterations, "iterations, loss: %.6f and false positive rate: %.3f" % (g_loss, g_acc))
+                        print("  generator:    ", g_iterations, "iterations, loss: %.6f and false positive rate: %.3f" % (g_loss, g_acc))
                         print("  discriminator:", d_iterations, "iterations, loss: %.6f and accuracy: %.3f" % (d_loss, d_acc))
                 # 3. Output
                 if epoch % save_freq == 0:
