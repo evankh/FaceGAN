@@ -128,9 +128,10 @@ def save_final(folder):
                 dataset.save_image(folder, "A.fade" + str(i), model.generator.generate(s * final1).numpy()[0])
                 dataset.save_image(folder, "B.fade" + str(i), model.generator.generate(s * final2).numpy()[0])
                 dataset.save_image(folder, "transition" + str(i), model.generator.generate(final1 * (1-f) + final2 * f).numpy()[0])
-        for i in range(10):
+        for i in range(5):
                 dataset.save_image(folder, "A.noise" + str(i), model.generator.generate(final1).numpy()[0])
                 dataset.save_image(folder, "B.noise" + str(i), model.generator.generate(final2).numpy()[0])
+                dataset.save_image(folder, "0.noise" + str(i), model.generator.generate(np.zeros((1, model.input_size))).numpy()[0])
 
 # Training parameters
 test_seed = get_random_seeds(1) # Use the same seed for all test images for consistency
