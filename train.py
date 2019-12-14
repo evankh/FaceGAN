@@ -133,6 +133,14 @@ def save_final(folder):
                 dataset.save_image(folder, "B.noise" + str(i), model.generator.generate(final2).numpy()[0])
                 dataset.save_image(folder, "0.noise" + str(i), model.generator.generate(np.zeros((1, model.input_size))).numpy()[0])
 
+def save_crossover(folder, number=4, scale=1.0):
+        dataset.clean(folder)
+        seeds = [scale * get_random_seeds(1) for i in range(number)]
+        for i in range(len(seeds)):
+                for j in range(len(seeds)):
+                        im = model.generator.generate(seeds[i], seeds[j], 2).numpy()[0]
+                        dataset.save_image(folder, str(i) + "." + str(j), im)
+
 # Training parameters
 test_seed = get_random_seeds(1) # Use the same seed for all test images for consistency
 epoch = 0               # Number of epochs trained total
