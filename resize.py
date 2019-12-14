@@ -2,15 +2,18 @@ from PIL import Image
 import os
 
 base = "../img/"
-out_sizes = [4, 8, 16, 32, 64]
+out_sizes = [8, 16, 32, 64]
 in_size = 128
-num_sets = 5
+in_sets = [5, 6, 7, 8, 9, 10]
 
-for n in range(1, num_sets):
+for n in in_sets:
         in_folder = os.path.join(base, str(in_size), str(n * 1000).rjust(5, "0"))
         if os.path.exists(in_folder) and os.path.isdir(in_folder):
                 for size in out_sizes:
-                        out_folder = os.path.join(base, str(size), str(n * 1000).rjust(5, "0"))
+                        out_folder = os.path.join(base, str(size))
+                        if not os.path.exists(out_folder):
+                                os.mkdir(out_folder)
+                        out_folder = os.path.join(out_folder, str(n * 1000).rjust(5, "0"))
                         if not os.path.exists(out_folder):
                                 os.mkdir(out_folder)
                         dirs = os.listdir(in_folder)
@@ -21,3 +24,5 @@ for n in range(1, num_sets):
                                         imResize.save(os.path.join(out_folder, item), "PNG")
                                         im.close()
                                         imResize.close()
+        else:
+               print("Folder not found:", in_folder)

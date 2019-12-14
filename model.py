@@ -8,9 +8,11 @@ input_size = 64                 # Dimensionality of input space
 latent_size = 64                # Dimaensionality of latent space
 initializer_shape = (4, 4, latent_size) # Shape of constant initialization layer
 starting_resolution = 8         # Initial resolution of images
-num_channels = 3                # Number of internal channels to use, to hopefully have more information to work with than just RGB
+num_channels = 12               # Number of internal channels to use, to have more information to work with than just RGB
 use_smaller_noise = False       # Use noise textures one resolution smaller than the current resolution, to significantly decrease the size of the network
-use_mapping = False             # Use a mapping network to generate a latent code from the input code
+use_mapping = False             # Use a mapping network to generate a latent code from the input code, to increase independence of input dimensions
+mapping_depth = 4               # Number of layers in the mapping network
+mapping_rate = 0.0005           # Learning rate for the mapping network (Adam default = 0.001)
 use_second_block = True         # Use two Convolution - Noise - AdaIN blocks for each resolution
 loss = "binary_crossentropy"    # Loss function to use 
 
@@ -97,19 +99,40 @@ class AdaptiveInstanceNormalizationLayer(tf.keras.layers.Layer):
                 base_config = super(AdaptiveInstanceNormalizationLayer, self).get_config()
                 return dict(list(base_config.items()) + list(config.items()))
 
+class MixLayer(tf.keras.layers.Layer):
+        """Mixes two layers according to an adjustable parameter alpha."""
+        def __init__(self, alpha=0.0, **kwargs):
+                super(MixLayer, self).__init__(**kwargs)
+                self.alpha = alpha
+        def compute_output_shape(self, input_shape):
+                assert len(input_shape) == 2
+                assert input_shape[0] == input_shape[1]
+                return input_shape[0]
+        def build(self, input_shape):
+                pass
+        def call(self, inputs):
+                assert len(inputs) == 2
+                a, b = inputs
+                return a * (1 - self.alpha) + b * self.alpha
+        def get_config(self):
+                config = {"alpha": self.alpha}
+                base_config = super(MixLayer, self).get_config()
+                return dict(list(base_config.items()) + list(config.items()))
+
 class Generator:
         """Keeps all necessary information for the generator in one place.
         """
         def __init__(self, mapping, synthesis, inputs, ignored_inputs):
                 self.mapping = mapping
                 self.synthesis = synthesis
-                self.toRGB = tf.keras.layers.Conv2D(filters=3, kernel_size=1, padding="same",
+                self.toRGB = tf.keras.layers.Conv2D(filters=3, kernel_size=1, padding="same", name="toRGB",
                                                     activation=tf.keras.activations.tanh,
                                                     kernel_initializer=tf.keras.initializers.RandomNormal(),
                                                     bias_initializer=tf.keras.initializers.Zeros())
                 self.inputs = inputs
                 self.ignored_inputs = ignored_inputs
                 self.model = tf.keras.Model(inputs=self.inputs + self.ignored_inputs, outputs=self.toRGB(self.synthesis))
+                self.mix = None
         def generate(self, noise, crossover_noise=None, crossover_layer=0):
                 # Inputs:
                 #  - one input code for each resolution (Each layer could use a separate one, but it is currently only set up to use 2)
@@ -131,6 +154,9 @@ class Generator:
                 else:
                         assert x.shape == crossover_x.shape
                         return [x for i in self.inputs[:crossover_layer]] + [crossover_x for i in self.inputs[crossover_layer:]] + [np.zeros((x.shape[0],) + i.shape[1:]) for i in self.ignored_inputs]
+        def set_alpha(self, alpha):
+                if self.mix is not None:
+                        self.mix.alpha = alpha
         # Ideally, once training is finished, mapping network can be removed entirely
         # Input would be the latent code directly, for better feature separation, which means the inputs to the AdaIN layers will have to change
 
@@ -140,120 +166,127 @@ class Discriminator:
         def __init__(self, classifier):
                 self.classifier = classifier
                 self.resolution = starting_resolution
-                self.fromRGB = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=1,
+                self.fromRGB = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=1, name="fromRGB",
                                                       kernel_initializer=tf.keras.initializers.RandomNormal(),
                                                       bias_initializer=tf.keras.initializers.Zeros())
-                self.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(self.resolution, self.resolution, 3)), self.fromRGB, self.classifier])
+                self.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(self.resolution, self.resolution, 3)), self.fromRGB] + self.classifier)
                 self.model.compile(loss=loss, optimizer="adam", metrics=["binary_accuracy"])
+                self.mix = None
         def classify(self, image):
-                return self.classifier.predict(self.fromRGB(image))
+                return self.model.predict(image)
+        def set_alpha(self, alpha):
+                if self.mix is not None:
+                        self.mix.alpha = alpha
 
 # Mapping Network
 # Takes in an input vector and outputs an intermediate latent code, intended to disentagle the input features
 mapping = tf.keras.Sequential()
 mapping.add(tf.keras.layers.Input(shape=(input_size,)))
-mapping.add(tf.keras.layers.Dense(input_size, activation="relu"))
-mapping.add(tf.keras.layers.Dense(input_size, activation="relu"))
-mapping.add(tf.keras.layers.Dense(input_size, activation="relu"))
-mapping.add(tf.keras.layers.Dense(input_size, activation="relu"))
-mapping.add(tf.keras.layers.Dense(latent_size, activation="relu"))
-mapping.add(tf.keras.layers.Dense(latent_size, activation="relu"))
-mapping.add(tf.keras.layers.Dense(latent_size, activation="relu"))
-mapping.add(tf.keras.layers.Dense(latent_size, activation="relu"))
-mapping.compile(loss="mean_squared_error", optimizer="adam")
+for i in range(mapping_depth // 2):
+        mapping.add(tf.keras.layers.Dense(input_size, name="Map_I_" + str(i),
+                                          kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1.0),
+                                          bias_initializer=tf.keras.initializers.Zeros()))
+        mapping.add(tf.keras.layers.LeakyReLU(alpha=0.2, name="Map_I_Act_" + str(i)))
+for i in range(mapping_depth - mapping_depth // 2):
+        mapping.add(tf.keras.layers.Dense(latent_size, name="Map_L_" + str(i),
+                                          kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1.0),
+                                          bias_initializer=tf.keras.initializers.Zeros()))
+        mapping.add(tf.keras.layers.LeakyReLU(alpha=0.2, name="Map_L_Act_" + str(i)))
+mapping.compile(loss="mean_squared_error", optimizer=tf.keras.optimizers.Adam(learning_rate=mapping_rate))
 
 # Synthesis Network
 # Has to be written using the Functional API so that the AdaIN layers can take multiple inputs.
 latent_input = tf.keras.layers.Input(shape=(input_size,))
 ignore_input = tf.keras.layers.Input(shape=initializer_shape)
-synthesis = ConstantLayer()(ignore_input)
+synthesis = ConstantLayer(name="Gen_Constant")(ignore_input)
 synthesis = tf.keras.layers.Flatten()(synthesis)
-synthesis = tf.keras.layers.Dense(starting_resolution * starting_resolution * num_channels,
+synthesis = tf.keras.layers.Dense(starting_resolution * starting_resolution * num_channels, name="Gen_Constant_Dense",
                                   kernel_initializer=tf.keras.initializers.RandomNormal(),
                                   bias_initializer=tf.keras.initializers.Zeros())(synthesis)
-synthesis = tf.keras.layers.Reshape((starting_resolution, starting_resolution, num_channels))(synthesis)
-synthesis = NoiseLayer()(synthesis)
+synthesis = tf.keras.layers.Reshape((starting_resolution, starting_resolution, num_channels), name="Gen_Reshape")(synthesis)
+synthesis = NoiseLayer(name="Gen_Noise_8_A")(synthesis)
 if use_mapping:
-        synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
+        synthesis = AdaptiveInstanceNormalizationLayer(name="Gen_AdaIN_8_A")([mapping(latent_input), synthesis])
 else:
-        synthesis = AdaptiveInstanceNormalizationLayer()([latent_input, synthesis])
-synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
+        synthesis = AdaptiveInstanceNormalizationLayer(name="Gen_AdaIN_8_A")([latent_input, synthesis])
+synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same", name="Gen_Conv_8",
                                    kernel_initializer=tf.keras.initializers.RandomNormal(),
                                    bias_initializer=tf.keras.initializers.Zeros())(synthesis)
-synthesis = tf.keras.layers.LeakyReLU(alpha=0.2)(synthesis)
-synthesis = NoiseLayer()(synthesis)
+synthesis = tf.keras.layers.LeakyReLU(alpha=0.2, name="Gen_LeReLU_8")(synthesis)
+synthesis = NoiseLayer(name="Gen_Noise_8_B")(synthesis)
 if use_mapping:
-        synthesis = AdaptiveInstanceNormalizationLayer()([mapping(latent_input), synthesis])
+        synthesis = AdaptiveInstanceNormalizationLayer(name="Gen_AdaIN_8_B")([mapping(latent_input), synthesis])
 else:
-        synthesis = AdaptiveInstanceNormalizationLayer()([latent_input, synthesis])
+        synthesis = AdaptiveInstanceNormalizationLayer(name="Gen_AdaIN_8_B")([latent_input, synthesis])
 
 generator = Generator(mapping, synthesis, [latent_input,], [ignore_input,])
 
 # Discriminator Network
-classifier = tf.keras.Sequential()
-classifier.add(tf.keras.layers.Input(shape=(starting_resolution, starting_resolution, num_channels)))
-classifier.add(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
-                                      kernel_initializer=tf.keras.initializers.RandomNormal(),
-                                      bias_initializer=tf.keras.initializers.Zeros()))
-classifier.add(tf.keras.layers.Flatten())
-classifier.add(tf.keras.layers.Dense(8, activation="linear",
-                                     kernel_initializer=tf.keras.initializers.RandomNormal(),
-                                     bias_initializer=tf.keras.initializers.Zeros()))
-classifier.add(tf.keras.layers.LeakyReLU(alpha=0.2))
-classifier.add(tf.keras.layers.Dense(1, activation="sigmoid",
-                                     kernel_initializer=tf.keras.initializers.RandomNormal(),
-                                     bias_initializer=tf.keras.initializers.Zeros()))
-classifier.compile(loss=loss, optimizer="adam", metrics=["binary_accuracy"])
+classifier = []
+classifier.append(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same", name="Disc_Conv_8",
+                                         kernel_initializer=tf.keras.initializers.RandomNormal(),
+                                         bias_initializer=tf.keras.initializers.Zeros()))
+classifier.append(tf.keras.layers.Flatten())
+classifier.append(tf.keras.layers.Dense(8, activation="linear", name="Disc_Dense_8",
+                                        kernel_initializer=tf.keras.initializers.RandomNormal(),
+                                        bias_initializer=tf.keras.initializers.Zeros()))
+classifier.append(tf.keras.layers.LeakyReLU(alpha=0.2, name="Disc_Dense_Activation"))
+classifier.append(tf.keras.layers.Dense(1, activation="sigmoid", name="Disc_Dense_1",
+                                        kernel_initializer=tf.keras.initializers.RandomNormal(),
+                                        bias_initializer=tf.keras.initializers.Zeros()))
 
 discriminator = Discriminator(classifier)
 
-def add_resolution(generator, discriminaor):
-        generator.synthesis = tf.keras.layers.UpSampling2D()(generator.synthesis)
-        generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
+def add_resolution(generator, discriminator):
+        tag = "_" + str(discriminator.resolution * 2)
+        # Generator
+        generator.synthesis = tf.keras.layers.UpSampling2D(name="Gen_Up" + tag)(generator.synthesis)
+        old_layer = generator.synthesis
+        generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same", name="Gen_Conv" + tag + "_A",
                                                      kernel_initializer=tf.keras.initializers.RandomNormal(),
                                                      bias_initializer=tf.keras.initializers.Zeros())(generator.synthesis)
-        generator.synthesis = tf.keras.layers.LeakyReLU(alpha=0.2)(generator.synthesis)
-        # Noise layers after the first are 1 resolution smaller than the layer they are being applied to, to dastically reduce the size of the network without sacrificing much quality
+        generator.synthesis = tf.keras.layers.LeakyReLU(alpha=0.2, name="Gen_LeReLu" + tag + "_A")(generator.synthesis)
         shape = (discriminator.resolution, discriminator.resolution, num_channels)
         generator.inputs.append(tf.keras.layers.Input(shape=(input_size,)))     # Add a new input for each resolution, used for crossover training
         if use_smaller_noise:
+                # Noise layers after the first are 1 resolution smaller than the layer they are being applied to, to dastically reduce the size of the network without sacrificing much quality
                 generator.ignored_inputs.append(tf.keras.layers.Input(shape=shape))     # Input = all zeros
-                noise = NoiseLayer()(generator.ignored_inputs[-1])
-                noise = tf.keras.layers.UpSampling2D()(noise)
-                generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
+                noise = NoiseLayer(name="Gen_Noise" + tag + "_A")(generator.ignored_inputs[-1])
+                noise = tf.keras.layers.UpSampling2D(name="Gen_Noise_Up" + tag + "_A")(noise)
+                generator.synthesis = tf.keras.layers.Add(name="Gen_Noise_Add" + tag + "_A")(inputs=[generator.synthesis, noise])
         else:
-                generator.synthesis = NoiseLayer()(generator.synthesis)
+                generator.synthesis = NoiseLayer(name="Gen_Noise" + tag + "_A")(generator.synthesis)
         if use_mapping:
-                generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
+                generator.synthesis = AdaptiveInstanceNormalizationLayer(name="Gen_AdaIN" + tag + "_A")([generator.mapping(generator.inputs[-1]), generator.synthesis])
         else:
-                generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
+                generator.synthesis = AdaptiveInstanceNormalizationLayer(name="Gen_AdaIN" + tag + "_A")([generator.inputs[-1], generator.synthesis])
         if use_second_block:
-                generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
+                generator.synthesis = tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same", name="Gen_Conv" + tag + "_B",
                                                              kernel_initializer=tf.keras.initializers.RandomNormal(),
                                                              bias_initializer=tf.keras.initializers.Zeros())(generator.synthesis)
-                generator.synthesis = tf.keras.layers.LeakyReLU(alpha=0.2)(generator.synthesis)
+                generator.synthesis = tf.keras.layers.LeakyReLU(alpha=0.2, name="Gen_LeReLu" + tag + "_B")(generator.synthesis)
                 if use_smaller_noise:
-                        noise = NoiseLayer()(generator.ignored_inputs[-1])      # Reuse the same input layer, since it's being ignored anyway
-                        noise = tf.keras.layers.UpSampling2D()(noise)
-                        generator.synthesis = tf.keras.layers.Add()(inputs=[generator.synthesis, noise])
+                        noise = NoiseLayer(name="Gen_Noise" + tag + "_B")(generator.ignored_inputs[-1])      # Reuse the same input layer, since it's being ignored anyway
+                        noise = tf.keras.layers.UpSampling2D(name="Gen_Noise_Up" + tag + "_B")(noise)
+                        generator.synthesis = tf.keras.layers.Add(name="Gen_Noise_Add" + tag + "_B")(inputs=[generator.synthesis, noise])
                 else:
-                        generator.synthesis = NoiseLayer()(generator.synthesis)
+                        generator.synthesis = NoiseLayer(name="Gen_Noise" + tag + "_B")(generator.synthesis)
                 if use_mapping:
-                        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.mapping(generator.inputs[-1]), generator.synthesis])
+                        generator.synthesis = AdaptiveInstanceNormalizationLayer(name="Gen_AdaIN" + tag + "_B")([generator.mapping(generator.inputs[-1]), generator.synthesis])
                 else:
-                        generator.synthesis = AdaptiveInstanceNormalizationLayer()([generator.inputs[-1], generator.synthesis])
-        generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.toRGB(generator.synthesis))
+                        generator.synthesis = AdaptiveInstanceNormalizationLayer(name="Gen_AdaIN" + tag + "_B")([generator.inputs[-1], generator.synthesis])
+        generator.mix = MixLayer(0.0, name="Gen_Mix" + tag)
+        generator.model = tf.keras.Model(inputs=generator.inputs + generator.ignored_inputs, outputs=generator.mix([generator.toRGB(old_layer), generator.toRGB(generator.synthesis)]))
+        # And since the mix layer is never technically added to the synthesis, it just drops out once the next resolution is added, kinda like the toRGB layer!
         generator.model.compile(loss=loss, optimizer="adam")
-        # To-do: smooth fade-in of the new layer as decribed in [5]
+        # Discriminator
         discriminator.resolution *= 2
-        classifier = tf.keras.Sequential()
-        classifier.add(tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, num_channels)))
-        classifier.add(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same",
-                                              kernel_initializer=tf.keras.initializers.RandomNormal(),
-                                              bias_initializer=tf.keras.initializers.Zeros()))
-        classifier.add(tf.keras.layers.LeakyReLU(alpha=0.2))
-        classifier.add(tf.keras.layers.AveragePooling2D())
-        classifier.add(discriminator.classifier)
-        discriminator.classifier = classifier
-        discriminator.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, 3)), discriminator.fromRGB, discriminator.classifier])
+        classifier = []
+        classifier.append(tf.keras.layers.Conv2D(filters=num_channels, kernel_size=3, padding="same", name="Disc_Conv" + tag,
+                                                 kernel_initializer=tf.keras.initializers.RandomNormal(),
+                                                 bias_initializer=tf.keras.initializers.Zeros()))
+        classifier.append(tf.keras.layers.LeakyReLU(alpha=0.2, name="Disc_LeReLU" + tag))
+        classifier.append(tf.keras.layers.AveragePooling2D(name="Disc_Avg" + tag))
+        discriminator.classifier = classifier + discriminator.classifier
+        discriminator.model = tf.keras.Sequential([tf.keras.layers.Input(shape=(discriminator.resolution, discriminator.resolution, 3)), discriminator.fromRGB] + discriminator.classifier)
         discriminator.model.compile(loss=loss, optimizer="adam", metrics=["binary_accuracy"])

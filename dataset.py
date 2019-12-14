@@ -4,7 +4,7 @@ import shutil
 import numpy as np
 
 base = "../img/"
-num_sets = 5
+num_sets = 11
 
 def get_image(size):
         if get_image.item == 999:
